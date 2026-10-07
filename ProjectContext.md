@@ -153,6 +153,7 @@ MiningSwitch/
 ├── MiningSwitch.ps1             # Main WPF UI + orchestration (485 lines)
 ├── MiningSwitch.Features.ps1    # Background logic: earnings, cleanup, power
 ├── Test-Features.ps1            # Assertion tests for earnings & cleanup
+├── install.ps1                  # Remote installer (runs via `irm ... | iex`)
 ├── settings.json                # Computer name + pool worker name
 ├── MiningSwitch.ico             # Window / tray icon
 ├── MiningSwitch.zip             # Release archive

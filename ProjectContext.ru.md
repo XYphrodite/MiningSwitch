@@ -154,6 +154,7 @@ MiningSwitch/
 ├── MiningSwitch.ps1             # Основной интерфейс WPF + координация (485 строк)
 ├── MiningSwitch.Features.ps1    # Фоновая логика: доход, очистка, питание
 ├── Test-Features.ps1            # Тесты расчётов и очистки
+├── install.ps1                  # Удалённый установщик (запуск через `irm ... | iex`)
 ├── settings.json                # Имя компьютера + имя воркера пула
 ├── MiningSwitch.ico             # Значок окна / трея
 ├── MiningSwitch.zip             # Архив релиза
