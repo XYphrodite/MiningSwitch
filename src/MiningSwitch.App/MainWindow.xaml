@@ -1,0 +1,96 @@
+<Window x:Class="MiningSwitch.App.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Mining Switch" Width="960" Height="760" MinWidth="880" MinHeight="640"
+        WindowStartupLocation="CenterScreen" Background="#10141D" Foreground="#F1F5FA"
+        FontFamily="Segoe UI" FontSize="14">
+    <Grid Margin="28,22">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <StackPanel>
+            <TextBlock Text="MINING SWITCH" Foreground="#61E8BA" FontSize="12" FontWeight="Bold"/>
+            <TextBlock Text="Твой ПК. Всё под контролем." FontSize="27" FontWeight="SemiBold" Margin="0,7,0,4"/>
+            <TextBlock x:Name="ComputerLabel" Foreground="#929FB4" FontSize="12"/>
+        </StackPanel>
+
+        <UniformGrid Grid.Row="1" Columns="3" Margin="0,18,0,16">
+            <Border Background="#1B2331" CornerRadius="12" Padding="14" Margin="0,0,10,0">
+                <StackPanel>
+                    <TextBlock Text="ПРОЦЕССОР" FontSize="10" Foreground="#929FB4"/>
+                    <TextBlock x:Name="CpuLabel" Text="—" FontSize="19" Margin="0,4,0,0"/>
+                </StackPanel>
+            </Border>
+            <Border Background="#1B2331" CornerRadius="12" Padding="14" Margin="0,0,10,0">
+                <StackPanel>
+                    <TextBlock Text="ОПЕРАТИВНАЯ ПАМЯТЬ" FontSize="10" Foreground="#929FB4"/>
+                    <TextBlock x:Name="RamLabel" Text="—" FontSize="19" Margin="0,4,0,0"/>
+                </StackPanel>
+            </Border>
+            <Border Background="#1B2331" CornerRadius="12" Padding="14">
+                <StackPanel>
+                    <TextBlock Text="СВОБОДНО НА ДИСКАХ" FontSize="10" Foreground="#929FB4"/>
+                    <TextBlock x:Name="DiskLabel" Text="—" FontSize="16" Margin="0,6,0,0"/>
+                </StackPanel>
+            </Border>
+        </UniformGrid>
+
+        <Grid Grid.Row="2">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="340"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+
+            <StackPanel Margin="0,0,18,0">
+                <Border Background="#1B2331" CornerRadius="16" Padding="18">
+                    <StackPanel>
+                        <TextBlock Text="XMRig · процессор" Foreground="#929FB4" FontSize="12"/>
+                        <TextBlock x:Name="StatusLabel" Text="Подключение…" FontSize="22" FontWeight="SemiBold" Margin="0,6,0,10"/>
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock x:Name="HashrateLabel" Text="—" FontSize="24"/>
+                            <TextBlock Text=" H/s" Foreground="#929FB4" VerticalAlignment="Bottom" Margin="0,0,0,3"/>
+                        </StackPanel>
+                    </StackPanel>
+                </Border>
+                <Border Background="#1B2331" CornerRadius="16" Padding="18" Margin="0,12,0,0">
+                    <StackPanel>
+                        <TextBlock Text="lolMiner · видеокарта" Foreground="#929FB4" FontSize="12"/>
+                        <TextBlock x:Name="GpuStatusLabel" Text="Проверяем GPU…" FontSize="18" FontWeight="SemiBold" Margin="0,6,0,6"/>
+                        <TextBlock x:Name="GpuRateLabel" Text="—" FontSize="20"/>
+                    </StackPanel>
+                </Border>
+                <Button x:Name="PowerButton" Background="#61E8BA" Foreground="#10251E" IsEnabled="False" Height="136" Margin="0,14,0,0">
+                    <StackPanel>
+                        <TextBlock Text="&#xE7E8;" FontFamily="Segoe MDL2 Assets" FontSize="32" HorizontalAlignment="Center"/>
+                        <TextBlock x:Name="PowerLabel" Text="Проверяем майнеры" FontSize="19" FontWeight="SemiBold" Margin="0,14,0,0" HorizontalAlignment="Center"/>
+                    </StackPanel>
+                </Button>
+            </StackPanel>
+
+            <Border Grid.Column="1" Background="#1B2331" CornerRadius="16" Padding="22" VerticalAlignment="Top">
+                <StackPanel>
+                    <TextBlock Text="ТВОЙ ПК · CPU + GPU · ОЦЕНКА" Foreground="#61E8BA" FontSize="12" FontWeight="SemiBold"/>
+                    <TextBlock Text="Прогноз ₽/сутки · по средней скорости пула" Foreground="#A7B4C8" Margin="0,18,0,2" FontSize="12"/>
+                    <TextBlock x:Name="IncomeDayLabel" Text="— ₽" FontSize="42" FontWeight="SemiBold"/>
+                    <TextBlock x:Name="IncomeDetailLabel" Text="Загружаем статистику воркера…" Foreground="#A7B4C8" FontSize="12" TextWrapping="Wrap" Margin="0,4,0,18"/>
+
+                    <Border Background="#293449" Height="1" Margin="0,0,0,14"/>
+
+                    <TextBlock Text="ВСЕ КОМПЬЮТЕРЫ · CPU + GPU" Foreground="#61E8BA" FontSize="12" FontWeight="SemiBold"/>
+                    <TextBlock x:Name="FleetIncomeLabel" Text="— ₽" FontSize="27" FontWeight="SemiBold" Margin="0,5,0,4"/>
+                    <TextBlock x:Name="FleetDetailsLabel" Text="Оценка за сутки по всем воркерам кошелька." Foreground="#A7B4C8" FontSize="12" TextWrapping="Wrap" Margin="0,0,0,14"/>
+
+                    <Button x:Name="RefreshIncomeButton" Content="Обновить доход" Style="{StaticResource SmallButton}" HorizontalAlignment="Left" Click="OnRefreshIncome"/>
+                    <TextBlock x:Name="IncomeNoteLabel" Foreground="#929FB4" FontSize="11" TextWrapping="Wrap" Margin="0,10,0,0"/>
+                    <TextBlock Text="Это оценка, а не начисления: PPLNS, удача пула и электричество не учитываются." Foreground="#929FB4" FontSize="11" TextWrapping="Wrap" Margin="0,8,0,0"/>
+                </StackPanel>
+            </Border>
+        </Grid>
+
+        <TextBlock x:Name="NoteLabel" Grid.Row="3" Text="Крестик сворачивает окно к часам. Ручное выключение сохраняется после перезагрузки." Foreground="#929FB4" TextWrapping="Wrap" Margin="2,15,2,0" FontSize="12" MinHeight="30"/>
+    </Grid>
+</Window>
