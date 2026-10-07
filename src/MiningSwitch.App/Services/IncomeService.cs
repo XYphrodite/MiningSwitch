@@ -141,7 +141,7 @@ public sealed class IncomeService : IDisposable
                 count++;
                 if (item.TryGetProperty("name", out var name)
                     && name.ValueKind == JsonValueKind.String
-                    && string.Equals(name.GetString(), worker, StringComparison.Ordinal))
+                    && string.Equals(name.GetString(), worker, StringComparison.OrdinalIgnoreCase))
                     workerRate = average;
             }
         }
@@ -171,7 +171,7 @@ public sealed class IncomeService : IDisposable
             throw new InvalidOperationException("Для отдельного учёта GPU нужно имя воркера.");
         var address = login[..dot];
         var worker = login[(dot + 1)..];
-        if (!string.Equals(worker, computerName, StringComparison.Ordinal))
+        if (!string.Equals(worker, computerName, StringComparison.OrdinalIgnoreCase))
             throw new InvalidOperationException("GPU воркер не совпадает с ПК.");
 
         var pool = await GetJsonAsync("https://taric29.luckypool.io/api/stats?v=2", ct)
@@ -215,7 +215,7 @@ public sealed class IncomeService : IDisposable
                 count++;
                 if (item.TryGetProperty("name", out var name)
                     && name.ValueKind == JsonValueKind.String
-                    && string.Equals(name.GetString(), worker, StringComparison.Ordinal))
+                    && string.Equals(name.GetString(), worker, StringComparison.OrdinalIgnoreCase))
                     workerRate = average;
             }
         }
