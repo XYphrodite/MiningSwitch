@@ -54,7 +54,11 @@ public sealed record GpuQuote(
     double FleetRub24,
     double RubRate,
     DateTimeOffset PriceTimeUtc,
-    int FleetWorkers);
+    int FleetWorkers)
+{
+    /// <summary>Why this PC's share is zero when it is zero.</summary>
+    public string? Note { get; init; }
+}
 
 public sealed record IncomeSnapshot(
     CpuQuote Cpu,
@@ -94,7 +98,12 @@ public sealed class IncomeService : IDisposable
 
         GpuQuote? gpu = null;
         string? gpuError = null;
-        try { gpu = await GetGpuQuoteAsync(config.GpuMiner, Environment.MachineName, ct); }
+        try
+        {
+            // Even a switched-off card's wallet still answers for the fleet forecast; only
+            // this PC's share is zero — a known zero, not missing data.
+            gpu = await GetGpuQuoteAsync(config.GpuMiner, Environment.MachineName, config.GpuMiner?.Enabled is true, ct);
+        }
         catch (Exception ex) when (ex is HttpRequestException or JsonException or InvalidOperationException or FormatException)
         {
             // A missing GPU source never becomes a confident zero; the caller shows the CPU part.
@@ -158,21 +167,27 @@ public sealed class IncomeService : IDisposable
             count);
     }
 
-    private async Task<GpuQuote> GetGpuQuoteAsync(GpuMinerSettingsDto? settings, string computerName, CancellationToken ct)
+    private async Task<GpuQuote> GetGpuQuoteAsync(
+        GpuMinerSettingsDto? settings, string computerName, bool enabled, CancellationToken ct)
     {
-        if (settings is null || settings.Enabled is not true)
-            throw new InvalidOperationException("GPU-майнер не включён.");
-        if (HostOf(settings.PoolUrl) is not "taric29.luckypool.io")
+        if (settings is null || string.IsNullOrWhiteSpace(settings.User))
+            throw new InvalidOperationException("GPU-майнер не настроен.");
+        // Any LuckyPool stratum endpoint shares the C29 accounting API below (the same rule
+        // mining-fleet's XtmAccount uses); other pools must not be queried with this wallet.
+        var gpuHost = HostOf(settings.PoolUrl);
+        if (gpuHost is null || !gpuHost.EndsWith(".luckypool.io", StringComparison.OrdinalIgnoreCase))
             throw new InvalidOperationException("Этот GPU пул не поддержан.");
 
-        var login = settings.User ?? "";
-        var dot = login.IndexOf('.');
+        // Pools disagree about the login shape: "address.worker" and "address/worker" both exist.
+        var login = settings.User;
+        var dot = login.IndexOfAny(['.', '/']);
         if (dot <= 0 || dot == login.Length - 1)
             throw new InvalidOperationException("Для отдельного учёта GPU нужно имя воркера.");
         var address = login[..dot];
         var worker = login[(dot + 1)..];
-        if (!string.Equals(worker, computerName, StringComparison.OrdinalIgnoreCase))
-            throw new InvalidOperationException("GPU воркер не совпадает с ПК.");
+
+        // This PC's share counts only while its card mines under a worker of its own.
+        var mine = enabled && string.Equals(worker, computerName, StringComparison.OrdinalIgnoreCase);
 
         var pool = await GetJsonAsync("https://taric29.luckypool.io/api/stats?v=2", ct)
             ?? throw new InvalidOperationException("LuckyPool недоступен.");
@@ -203,7 +218,7 @@ public sealed class IncomeService : IDisposable
         var coinsPerRateDay = IncomeMath.GpuCoinsPerHashrateDay(profit, units, fee.Value);
 
         var workers = Path(wallet, "workers");
-        double workerRate = -1, fleetRate = 0;
+        double workerRate = 0, fleetRate = 0;
         int count = 0;
         if (workers.ValueKind == JsonValueKind.Array)
         {
@@ -213,14 +228,20 @@ public sealed class IncomeService : IDisposable
                 if (average < 0) throw new InvalidOperationException("Нет средней скорости GPU за сутки.");
                 fleetRate += average;
                 count++;
-                if (item.TryGetProperty("name", out var name)
+                if (mine
+                    && item.TryGetProperty("name", out var name)
                     && name.ValueKind == JsonValueKind.String
                     && string.Equals(name.GetString(), worker, StringComparison.OrdinalIgnoreCase))
                     workerRate = average;
             }
         }
-        if (workerRate < 0)
-            throw new InvalidOperationException("Нет отдельной статистики GPU этого ПК.");
+
+        string? note = null;
+        if (!mine)
+        {
+            workerRate = 0;
+            note = enabled ? "GPU-воркер не этого ПК — его доход не приписывается." : "GPU выключен — 0 ₽.";
+        }
 
         return new GpuQuote(
             worker,
@@ -229,7 +250,7 @@ public sealed class IncomeService : IDisposable
             fleetRate * coinsPerRateDay * rubRate,
             rubRate,
             priceTime,
-            count);
+            count) { Note = note };
     }
 
     private static (double RubRate, DateTimeOffset PriceTimeUtc) ReadRubPrice(JsonElement market)

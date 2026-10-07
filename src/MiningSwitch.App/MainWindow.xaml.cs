@@ -236,6 +236,7 @@ public partial class MainWindow : Window
             IncomeDetailLabel.Text =
                 $"CPU ≈ {cpuRub:N2} ₽  +  GPU ≈ {gpu.WorkerRub24:N2} ₽{nl}" +
                 $"{snapshot.Cpu.Average24:N0} H/s CPU · {gpu.Average24:N2} H/s GPU в среднем за 24 ч";
+            if (gpu.Note is not null) IncomeDetailLabel.Text += nl + gpu.Note;
             FleetIncomeLabel.Text = $"≈ {snapshot.FleetRub24:N2} ₽ / сутки";
             FleetDetailsLabel.Text =
                 $"CPU ≈ {snapshot.Cpu.FleetRub24:N2} ₽ + GPU ≈ {gpu.FleetRub24:N2} ₽{nl}" +
