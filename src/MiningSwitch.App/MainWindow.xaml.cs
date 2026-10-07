@@ -51,7 +51,6 @@ public partial class MainWindow : Window
         _incomeTimer.Start();
 
         UpdateResources();
-        _ = UpdateIncomeAsync();
         _ = PollAgentAsync();
 
         if (startHidden) Hide();
@@ -153,6 +152,10 @@ public partial class MainWindow : Window
                 }
 
                 RefreshControls();
+
+                // Income needs the agent's wallet and worker; fetch it as soon as there is a link.
+                if (_online && _lastIncome is null && !_incomeBusy)
+                    _ = UpdateIncomeAsync();
             }
             catch (Exception ex)
             {
@@ -214,6 +217,10 @@ public partial class MainWindow : Window
         {
             _incomeBusy = false;
             RefreshIncomeButton.IsEnabled = true;
+            // Without any figure yet a slow retry would leave the card empty for minutes.
+            _incomeTimer.Interval = _lastIncome is null
+                ? TimeSpan.FromSeconds(30)
+                : TimeSpan.FromMinutes(5);
         }
     }
 
