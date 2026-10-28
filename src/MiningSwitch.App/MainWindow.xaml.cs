@@ -3,6 +3,8 @@ using System.Windows;
 using System.Windows.Media;
 using System.Windows.Threading;
 using MiningSwitch.App.Services;
+using SelfUpdateKit;
+using Application = System.Windows.Application;
 using Brush = System.Windows.Media.Brush;
 using Color = System.Windows.Media.Color;
 
@@ -11,6 +13,9 @@ namespace MiningSwitch.App;
 public partial class MainWindow : Window
 {
     private static readonly Brush Accent = new SolidColorBrush(Color.FromRgb(0x61, 0xE8, 0xBA));
+    private static readonly Brush AccentDark = new SolidColorBrush(Color.FromRgb(0x10, 0x25, 0x1E));
+    private static readonly Brush SmallSurface = new SolidColorBrush(Color.FromRgb(0x2B, 0x38, 0x4E));
+    private static readonly Brush LightText = new SolidColorBrush(Color.FromRgb(0xF1, 0xF5, 0xFA));
     private static readonly Brush Idle = new SolidColorBrush(Color.FromRgb(0xAB, 0xC4, 0xF7));
     private static readonly Brush Error = new SolidColorBrush(Color.FromRgb(0xFF, 0xAB, 0x9E));
     private static readonly Brush Muted = new SolidColorBrush(Color.FromRgb(0x92, 0x9F, 0xB4));
@@ -20,25 +25,30 @@ public partial class MainWindow : Window
     private readonly DispatcherTimer _pollTimer = new() { Interval = TimeSpan.FromSeconds(4) };
     private readonly DispatcherTimer _resourceTimer = new() { Interval = TimeSpan.FromSeconds(12) };
     private readonly DispatcherTimer _incomeTimer = new() { Interval = TimeSpan.FromMinutes(5) };
+    private readonly DispatcherTimer _updateTimer = new() { Interval = TimeSpan.FromHours(6) };
 
     private AgentClient? _client;
     private readonly IncomeService _income = new();
 
     private bool _online, _busy, _running, _gpuRunning, _gpuKnown, _cpuKnown, _manualOff, _exitRequested;
-    private bool _pollBusy, _incomeBusy, _gpuAvailable = true;
+    private bool _pollBusy, _incomeBusy, _updateBusy, _gpuAvailable = true;
     private GpuMinerSoftware? _configuredGpuMiner;
     private DateTimeOffset _lastConfigAt = DateTimeOffset.MinValue;
     private IncomeSnapshot? _lastIncome;
+    private SelfUpdateReport? _availableUpdate;
 
     public MainWindow(Func<EventWaitHandle?>? showEventAccessor, bool startHidden)
     {
         _showEventAccessor = showEventAccessor;
         InitializeComponent();
+        Title = $"Mining Switch {MiningSwitchUpdate.DisplayVersion}";
+        VersionLabel.Text = MiningSwitchUpdate.DisplayVersion;
         ComputerLabel.Text = $"{Environment.MachineName}  /  ЛОКАЛЬНОЕ УПРАВЛЕНИЕ";
 
         _tray.OpenRequested += ShowWindow;
         _tray.EnableRequested += () => _ = StartControlAsync(enable: true);
         _tray.DisableRequested += () => _ = StartControlAsync(enable: false);
+        _tray.UpdateRequested += () => _ = HandleUpdateActionAsync(userInitiated: true);
         _tray.ExitRequested += ExitApplication;
 
         PowerButton.Click += (_, _) =>
@@ -47,12 +57,15 @@ public partial class MainWindow : Window
         _pollTimer.Tick += (_, _) => _ = PollAgentAsync();
         _resourceTimer.Tick += (_, _) => UpdateResources();
         _incomeTimer.Tick += (_, _) => _ = UpdateIncomeAsync();
+        _updateTimer.Tick += (_, _) => _ = CheckForUpdateAsync(userInitiated: false);
         _pollTimer.Start();
         _resourceTimer.Start();
         _incomeTimer.Start();
+        _updateTimer.Start();
 
         UpdateResources();
         _ = PollAgentAsync();
+        _ = CheckForUpdateStartupAsync();
 
         if (startHidden) Hide();
     }
@@ -86,6 +99,7 @@ public partial class MainWindow : Window
         _pollTimer.Stop();
         _resourceTimer.Stop();
         _incomeTimer.Stop();
+        _updateTimer.Stop();
         _tray.Dispose();
         _client?.Dispose();
         _income.Dispose();
@@ -414,4 +428,154 @@ public partial class MainWindow : Window
     }
 
     private void OnRefreshIncome(object sender, RoutedEventArgs e) => _ = UpdateIncomeAsync();
+
+    // ---- self-update (SelfUpdateKit) -----------------------------------
+
+    private void OnUpdateClick(object sender, RoutedEventArgs e) =>
+        _ = HandleUpdateActionAsync(userInitiated: true);
+
+    private async Task CheckForUpdateStartupAsync()
+    {
+        await Task.Delay(TimeSpan.FromSeconds(5));
+        await CheckForUpdateAsync(userInitiated: false);
+    }
+
+    private Task HandleUpdateActionAsync(bool userInitiated) =>
+        _availableUpdate is { Status: SelfUpdateStatus.UpdateAvailable }
+            ? ApplyUpdateAsync()
+            : CheckForUpdateAsync(userInitiated);
+
+    private async Task CheckForUpdateAsync(bool userInitiated)
+    {
+        if (_updateBusy || !MiningSwitchUpdate.CanSelfUpdate(Environment.ProcessPath))
+            return;
+
+        _updateBusy = true;
+        UpdateButton.IsEnabled = false;
+        _tray.SetUpdateState("Проверяем обновления…", enabled: false);
+        if (userInitiated)
+        {
+            UpdateStatusLabel.Foreground = Muted;
+            UpdateStatusLabel.Text = "Проверяем GitHub Releases…";
+        }
+
+        try
+        {
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+            var report = await MiningSwitchUpdate.CheckAsync(cts.Token);
+            if (report.Status == SelfUpdateStatus.UpdateAvailable)
+            {
+                _availableUpdate = report;
+                var label = $"Обновить до v{report.Release}";
+                UpdateButton.Content = label;
+                UpdateButton.Background = Accent;
+                UpdateButton.Foreground = AccentDark;
+                UpdateStatusLabel.Foreground = Accent;
+                UpdateStatusLabel.Text = $"Доступна новая версия {report.Tag}";
+                _tray.SetUpdateState(label, enabled: true);
+            }
+            else
+            {
+                _availableUpdate = null;
+                ResetUpdateButtonAppearance();
+                _tray.SetUpdateState("Проверить обновления", enabled: true);
+                if (userInitiated)
+                {
+                    UpdateStatusLabel.Foreground = Muted;
+                    UpdateStatusLabel.Text = $"Актуальная версия ({MiningSwitchUpdate.DisplayVersion})";
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _tray.SetUpdateState(
+                _availableUpdate is { Status: SelfUpdateStatus.UpdateAvailable } avail
+                    ? $"Обновить до v{avail.Release}"
+                    : "Проверить обновления",
+                enabled: true);
+            if (userInitiated)
+            {
+                UpdateStatusLabel.Foreground = Error;
+                UpdateStatusLabel.Text = "Не удалось проверить: " + ex.Message;
+            }
+        }
+        finally
+        {
+            _updateBusy = false;
+            UpdateButton.IsEnabled = true;
+        }
+    }
+
+    private async Task ApplyUpdateAsync()
+    {
+        if (_updateBusy) return;
+        _updateBusy = true;
+        UpdateButton.IsEnabled = false;
+        _tray.SetUpdateState("Обновляем…", enabled: false);
+        UpdateStatusLabel.Foreground = Muted;
+        UpdateStatusLabel.Text = "Скачивание обновления…";
+
+        try
+        {
+            var target = _availableUpdate;
+            var report = await MiningSwitchUpdate.ApplyWithElevationFallbackAsync(
+                target?.Release,
+                target?.Tag,
+                progress => Dispatcher.BeginInvoke(() => ShowUpdateProgress(progress)),
+                CancellationToken.None);
+
+            if (report.Status == SelfUpdateStatus.Updated)
+            {
+                UpdateStatusLabel.Foreground = Accent;
+                UpdateStatusLabel.Text = $"Установлена {report.Tag}. Перезапуск…";
+                var startInTray = !IsVisible;
+                _exitRequested = true;
+                Close();
+                if (Application.Current is App app)
+                    app.RestartIntoUpdatedBinary(startInTray);
+                return;
+            }
+
+            _availableUpdate = null;
+            ResetUpdateButtonAppearance();
+            _tray.SetUpdateState("Проверить обновления", enabled: true);
+            UpdateStatusLabel.Foreground = Muted;
+            UpdateStatusLabel.Text = $"Актуальная версия ({MiningSwitchUpdate.DisplayVersion})";
+        }
+        catch (Exception ex)
+        {
+            UpdateStatusLabel.Foreground = Error;
+            UpdateStatusLabel.Text = "Ошибка обновления: " + ex.Message;
+            _tray.SetUpdateState(
+                _availableUpdate is { } avail ? $"Обновить до v{avail.Release}" : "Проверить обновления",
+                enabled: true);
+        }
+        finally
+        {
+            _updateBusy = false;
+            UpdateButton.IsEnabled = true;
+        }
+    }
+
+    private void ShowUpdateProgress(SelfUpdateProgress progress)
+    {
+        UpdateStatusLabel.Foreground = Muted;
+        UpdateStatusLabel.Text = progress.Phase switch
+        {
+            SelfUpdatePhase.Checking => "Проверка релиза…",
+            SelfUpdatePhase.Downloading when progress.TotalBytes is > 0 && progress.ReceivedBytes is { } r =>
+                $"Скачивание {Math.Min(100, (int)(100.0 * r / progress.TotalBytes.Value))}%…",
+            SelfUpdatePhase.Downloading => "Скачивание…",
+            SelfUpdatePhase.Verifying => "Проверка SHA-256…",
+            SelfUpdatePhase.Installing => "Установка и проверка запуска…",
+            _ => UpdateStatusLabel.Text,
+        };
+    }
+
+    private void ResetUpdateButtonAppearance()
+    {
+        UpdateButton.Content = "Проверить обновления";
+        UpdateButton.Background = SmallSurface;
+        UpdateButton.Foreground = LightText;
+    }
 }

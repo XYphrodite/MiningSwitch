@@ -23,6 +23,7 @@ Mining Switch — настольный дашборд для ПК с майни�
 | Пакет / компонент | Версия | Назначение |
 |-------------------|--------|------------|
 | Microsoft.WindowsDesktop.App | 10.x | WPF + WinForms (значок в трее) |
+| `SelfUpdateKit` | 0.3.0 | Общее ядро самообновления из GitHub Releases (SHA-256 sidecar, MZ, атомарная подмена и probe) |
 | `mining-fleet-agent` | Устанавливается отдельно | Локальный API управления майнерами (`/api/v1`, loopback) |
 | Публичный API HashVault | v3 | Статистика CPU-воркера, данные сети, курс XMR/RUB |
 | Публичный API Kryptex Pool | v1 / v3 | Статистика GPU-воркера Pearl (`pearlhash`) за 24 ч и доходность PPS+ |
@@ -192,7 +193,7 @@ powershell -c "irm https://raw.githubusercontent.com/XYphrodite/MiningSwitch/mai
 ## Информация о документе
 
 **Обновлено**: 2026-10-29
-**Версия**: 4.1
+**Версия**: 4.2
 **Статус**: Активный
 **Репозиторий**: https://github.com/XYphrodite/MiningSwitch
 **Связанные документы**: `README.md` (русский), [mining-fleet](https://github.com/XYphrodite/mining-fleet), <https://hashvault.pro/monero/api>

@@ -1,0 +1,89 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: pwsh
+        working-directory: MiningSwitch
+    steps:
+      - name: Checkout MiningSwitch
+        uses: actions/checkout@v4
+        with:
+          path: MiningSwitch
+
+      - name: Checkout shared SelfUpdateKit
+        uses: actions/checkout@v4
+        with:
+          repository: XYphrodite/self-update-kit
+          ref: v0.3.0
+          path: self-update-kit
+
+      - name: Setup .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Verify version matches tag
+        run: |
+          [xml]$csproj = Get-Content src/MiningSwitch.App/MiningSwitch.App.csproj
+          $version = ($csproj.Project.PropertyGroup.Version | Where-Object { $_ } | Select-Object -First 1)
+          if ("v$version" -ne $env:GITHUB_REF_NAME) {
+            throw "Tag $($env:GITHUB_REF_NAME) does not match csproj Version $version"
+          }
+
+      - name: Run unit tests
+        run: dotnet test tests/MiningSwitch.Tests -c Release --nologo
+
+      - name: Publish single-file executable and package release assets
+        run: |
+          dotnet publish src/MiningSwitch.App `
+            -c Release `
+            -r win-x64 `
+            --self-contained false `
+            -p:PublishSingleFile=true `
+            -o artifacts/publish
+          if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed" }
+
+          $exe = "artifacts/publish/MiningSwitch.exe"
+          if (-not (Test-Path $exe)) { throw "Published MiningSwitch.exe not found" }
+
+          $probe = Start-Process -FilePath $exe -ArgumentList "--help" -Wait -PassThru -NoNewWindow
+          if ($probe.ExitCode -ne 0) { throw "Health probe (--help) failed with exit code $($probe.ExitCode)" }
+
+          New-Item -ItemType Directory -Force artifacts/release | Out-Null
+          Copy-Item $exe artifacts/release/MiningSwitch.exe
+          Compress-Archive -Path @("artifacts/release/MiningSwitch.exe", "README.md") `
+            -DestinationPath "artifacts/release/MiningSwitch.zip" `
+            -CompressionLevel Optimal -Force
+
+          foreach ($file in @("MiningSwitch.exe", "MiningSwitch.zip")) {
+            $path = "artifacts/release/$file"
+            $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $path).Hash.ToLowerInvariant()
+            "$hash  $file" | Set-Content -LiteralPath "$path.sha256" -Encoding ascii
+            Write-Host "$hash  $file"
+          }
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          $assets = @(Get-ChildItem artifacts/release -File | Select-Object -ExpandProperty FullName)
+          if ($assets.Count -ne 4) { throw "Expected 4 release assets, got $($assets.Count)" }
+          gh release create $env:RELEASE_TAG @assets --verify-tag --title "Mining Switch $env:RELEASE_TAG" --generate-notes
+          if ($LASTEXITCODE -ne 0) { throw "gh release create failed" }

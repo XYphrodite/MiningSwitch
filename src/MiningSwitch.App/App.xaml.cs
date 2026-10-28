@@ -1,8 +1,10 @@
+using System.Diagnostics;
 using System.IO;
 using System.Text.Json;
 using System.Threading;
 using System.Windows;
 using MiningSwitch.App.Services;
+using SelfUpdateKit;
 using Application = System.Windows.Application;
 using MessageBox = System.Windows.MessageBox;
 
@@ -19,33 +21,38 @@ public partial class App : Application
         base.OnStartup(e);
 
         var args = e.Args;
+
+        // Headless CLI flags run without touching the single-instance UI mutex.
+        // --help is also used by SelfUpdateKit's HealthProbe before and after swapping the binary.
+        if (args.Any(a => a is "-h" or "-?" || a.Equals("--help", StringComparison.OrdinalIgnoreCase)))
+        {
+            Console.WriteLine($"MiningSwitch {MiningSwitchUpdate.DisplayVersion}");
+            Console.WriteLine("Usage: MiningSwitch [-Tray] [--version] [--update [--check]] [--selftest [report.json]]");
+            Environment.ExitCode = 0;
+            Shutdown();
+            return;
+        }
+
+        if (args.Any(a => a.Equals("--version", StringComparison.OrdinalIgnoreCase)))
+        {
+            Console.WriteLine(MiningSwitchUpdate.InstalledVersion.ToString());
+            Environment.ExitCode = 0;
+            Shutdown();
+            return;
+        }
+
+        if (args.Any(a => a.Equals("--apply-update", StringComparison.OrdinalIgnoreCase))
+            || args.Any(a => a.Equals("--update", StringComparison.OrdinalIgnoreCase)))
+        {
+            var checkOnly = args.Any(a => a.Equals("--check", StringComparison.OrdinalIgnoreCase));
+            var code = Task.Run(() => RunCliUpdateAsync(checkOnly)).GetAwaiter().GetResult();
+            Environment.ExitCode = code;
+            Shutdown();
+            return;
+        }
+
         var selfTest = TryGetOption(args, "--selftest", out var reportPath);
         var tray = args.Contains("-Tray", StringComparer.OrdinalIgnoreCase);
-
-        if (!selfTest)
-        {
-            _mutex = new Mutex(false, @"Local\MiningSwitch.UI");
-            try { _ownsMutex = _mutex.WaitOne(0); }
-            catch (AbandonedMutexException) { _ownsMutex = true; }
-
-            if (!_ownsMutex)
-            {
-                // A second launch raises the window that is already there instead of a second copy.
-                try
-                {
-                    using var existing = EventWaitHandle.OpenExisting(@"Local\MiningSwitch.Show");
-                    existing.Set();
-                }
-                catch (WaitHandleCannotBeOpenedException)
-                {
-                    MessageBox.Show("Приложение уже работает. Нажми на значок возле часов.",
-                        "Mining Switch", MessageBoxButton.OK, MessageBoxImage.Information);
-                }
-                Shutdown();
-                return;
-            }
-            _showEvent = new EventWaitHandle(false, EventResetMode.AutoReset, @"Local\MiningSwitch.Show");
-        }
 
         if (selfTest)
         {
@@ -57,21 +64,99 @@ public partial class App : Application
             return;
         }
 
+        MiningSwitchUpdate.CleanUpRetiredCopies();
+
+        _mutex = new Mutex(false, @"Local\MiningSwitch.UI");
+        try { _ownsMutex = _mutex.WaitOne(0); }
+        catch (AbandonedMutexException) { _ownsMutex = true; }
+
+        if (!_ownsMutex)
+        {
+            // A second launch raises the window that is already there instead of a second copy.
+            try
+            {
+                using var existing = EventWaitHandle.OpenExisting(@"Local\MiningSwitch.Show");
+                existing.Set();
+            }
+            catch (WaitHandleCannotBeOpenedException)
+            {
+                MessageBox.Show("Приложение уже работает. Нажми на значок возле часов.",
+                    "Mining Switch", MessageBoxButton.OK, MessageBoxImage.Information);
+            }
+            Shutdown();
+            return;
+        }
+        _showEvent = new EventWaitHandle(false, EventResetMode.AutoReset, @"Local\MiningSwitch.Show");
+
         var window = new MainWindow(() => _showEvent, startHidden: tray);
         MainWindow = window;
         window.Closed += (_, _) => Shutdown();
         if (!tray) window.Show();
     }
 
+    public void RestartIntoUpdatedBinary(bool startInTray)
+    {
+        var exe = Environment.ProcessPath;
+        ReleaseSingleInstanceHandles();
+
+        if (!string.IsNullOrWhiteSpace(exe) && File.Exists(exe))
+        {
+            var startInfo = new ProcessStartInfo(exe)
+            {
+                UseShellExecute = true,
+                WorkingDirectory = Path.GetDirectoryName(exe) ?? AppContext.BaseDirectory,
+            };
+            if (startInTray)
+                startInfo.Arguments = "-Tray";
+            Process.Start(startInfo);
+        }
+
+        Shutdown();
+    }
+
     protected override void OnExit(ExitEventArgs e)
     {
+        ReleaseSingleInstanceHandles();
+        base.OnExit(e);
+    }
+
+    private void ReleaseSingleInstanceHandles()
+    {
         _showEvent?.Dispose();
+        _showEvent = null;
         if (_ownsMutex && _mutex is not null)
         {
             try { _mutex.ReleaseMutex(); } catch (ApplicationException) { /* never owned */ }
+            _ownsMutex = false;
         }
         _mutex?.Dispose();
-        base.OnExit(e);
+        _mutex = null;
+    }
+
+    private static async Task<int> RunCliUpdateAsync(bool checkOnly)
+    {
+        try
+        {
+            if (checkOnly)
+            {
+                var check = await MiningSwitchUpdate.CheckAsync(CancellationToken.None).ConfigureAwait(false);
+                Console.WriteLine(check.Status == SelfUpdateStatus.UpdateAvailable
+                    ? $"Update available: {check.Installed} -> {check.Release} ({check.Tag})"
+                    : $"MiningSwitch {check.Installed} is up to date.");
+                return check.Status == SelfUpdateStatus.UpdateAvailable ? 1 : 0;
+            }
+
+            var report = await MiningSwitchUpdate.ApplyInProcessAsync(null, CancellationToken.None).ConfigureAwait(false);
+            Console.WriteLine(report.Status == SelfUpdateStatus.Updated
+                ? $"Updated to {report.Tag}."
+                : $"MiningSwitch {report.Installed} is up to date.");
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"Update failed: {ex.Message}");
+            return 2;
+        }
     }
 
     private static bool TryGetOption(string[] args, string name, out string value)
@@ -93,7 +178,10 @@ public partial class App : Application
     /// </summary>
     private static bool RunSelfTest(string reportPath)
     {
-        var report = new Dictionary<string, object?>();
+        var report = new Dictionary<string, object?>
+        {
+            ["version"] = MiningSwitchUpdate.InstalledVersion.ToString(),
+        };
         var passed = true;
         try
         {

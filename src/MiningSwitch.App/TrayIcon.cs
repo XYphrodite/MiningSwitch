@@ -1,5 +1,6 @@
 using System.Drawing;
 using System.Windows.Forms;
+using MiningSwitch.App.Services;
 
 namespace MiningSwitch.App;
 
@@ -11,30 +12,34 @@ public sealed class TrayIcon : IDisposable
     public event Action? OpenRequested;
     public event Action? EnableRequested;
     public event Action? DisableRequested;
+    public event Action? UpdateRequested;
     public event Action? ExitRequested;
 
     public TrayIcon()
     {
         var menu = new ContextMenuStrip();
-        var open = new ToolStripMenuItem("Открыть Mining Switch");
+        var open = new ToolStripMenuItem($"Открыть Mining Switch ({MiningSwitchUpdate.DisplayVersion})");
         var start = new ToolStripMenuItem("Включить майнинг");
         var stop = new ToolStripMenuItem("Выключить майнинг");
+        var update = new ToolStripMenuItem("Проверить обновления");
         var exit = new ToolStripMenuItem("Закрыть приложение");
         menu.Items.Add(open);
         menu.Items.Add(start);
         menu.Items.Add(stop);
         menu.Items.Add(new ToolStripSeparator());
+        menu.Items.Add(update);
         menu.Items.Add(exit);
 
         open.Click += (_, _) => OpenRequested?.Invoke();
         start.Click += (_, _) => EnableRequested?.Invoke();
         stop.Click += (_, _) => DisableRequested?.Invoke();
+        update.Click += (_, _) => UpdateRequested?.Invoke();
         exit.Click += (_, _) => ExitRequested?.Invoke();
 
         _icon = new NotifyIcon
         {
             Icon = LoadIcon(),
-            Text = "Mining Switch — подключение",
+            Text = $"Mining Switch {MiningSwitchUpdate.DisplayVersion} — подключение",
             ContextMenuStrip = menu,
             Visible = true,
         };
@@ -42,10 +47,12 @@ public sealed class TrayIcon : IDisposable
 
         StartEnabled = start;
         StopEnabled = stop;
+        UpdateItem = update;
     }
 
     private ToolStripMenuItem StartEnabled { get; }
     private ToolStripMenuItem StopEnabled { get; }
+    private ToolStripMenuItem UpdateItem { get; }
 
     public void SetStatus(string text) =>
         _icon.Text = text.Length <= 63 ? text : text[..63];
@@ -55,6 +62,12 @@ public sealed class TrayIcon : IDisposable
     {
         StartEnabled.Enabled = canEnable;
         StopEnabled.Enabled = canDisable;
+    }
+
+    public void SetUpdateState(string label, bool enabled)
+    {
+        UpdateItem.Text = label;
+        UpdateItem.Enabled = enabled;
     }
 
     private static Icon LoadIcon()

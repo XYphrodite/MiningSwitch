@@ -23,6 +23,7 @@ Mining Switch is a Windows desktop dashboard for a mining PC: one big button sta
 | Package / Component | Version | Purpose |
 |---------------------|---------|---------|
 | Microsoft.WindowsDesktop.App | 10.x | WPF + WinForms (tray icon) |
+| `SelfUpdateKit` | 0.3.0 | Shared GitHub Releases self-update core (SHA-256 sidecar, MZ check, atomic swap + probe) |
 | `mining-fleet-agent` | Installed separately | Local miner control API (`/api/v1`, loopback) |
 | HashVault public API | v3 | CPU worker stats, network figures, XMR/RUB rate |
 | Kryptex Pool public API | v1 / v3 | GPU (Pearl `pearlhash`) worker 24h stats and PPS+ profit rate |
@@ -191,7 +192,7 @@ powershell -c "irm https://raw.githubusercontent.com/XYphrodite/MiningSwitch/mai
 ## Document Information
 
 **Last Updated**: 2026-10-29
-**Version**: 4.1
+**Version**: 4.2
 **Status**: Active
 **Repository**: https://github.com/XYphrodite/MiningSwitch
 **Related Docs**: `README.md` (Russian), [mining-fleet](https://github.com/XYphrodite/mining-fleet), <https://hashvault.pro/monero/api>
