@@ -2,7 +2,7 @@
 
 ## Обзор проекта
 
-Mining Switch — настольный дашборд для ПК с майнингом: одной большой кнопкой запускаются и останавливаются XMRig (CPU) и lolMiner (GPU) через локальный `mining-fleet-agent`, значок возле часов держит приложение в одном клике, а примерная оценка дохода покрывает и этот ПК, и все воркеры общих кошельков сети. Приложение никогда не меняет кошельки, учётные данные и настройки выплат.
+Mining Switch — настольный дашборд для ПК с майнингом: одной большой кнопкой запускаются и останавливаются XMRig (CPU) и GPU-майнер (SRBMiner / lolMiner) через локальный `mining-fleet-agent`, значок возле часов держит приложение в одном клике, а примерная оценка дохода покрывает и этот ПК, и все воркеры общих кошельков сети. Приложение никогда не меняет кошельки, учётные данные и настройки выплат.
 
 **Платформа**: Windows 10/11, .NET 10 (`net10.0-windows`), WPF
 **Язык**: C# 14
@@ -25,8 +25,9 @@ Mining Switch — настольный дашборд для ПК с майни�
 | Microsoft.WindowsDesktop.App | 10.x | WPF + WinForms (значок в трее) |
 | `mining-fleet-agent` | Устанавливается отдельно | Локальный API управления майнерами (`/api/v1`, loopback) |
 | Публичный API HashVault | v3 | Статистика CPU-воркера, данные сети, курс XMR/RUB |
+| Публичный API Kryptex Pool | v1 / v3 | Статистика GPU-воркера Pearl (`pearlhash`) за 24 ч и доходность PPS+ |
 | Публичный API LuckyPool | taric29 | Статистика GPU-воркера (Tari C29), курс из калькулятора пула |
-| Публичный API CoinGecko | v3 | Курс XTM/RUB |
+| Публичный API CoinGecko | v3 | Курс PRL/RUB (`pearl-2`) и XTM/RUB (`minotari`) с кэшем 10 мин |
 
 NuGet-пакетов в самом приложении нет; DTO и клиент агента адаптированы из
 [mining-fleet](https://github.com/XYphrodite/mining-fleet) (`MiningFleet.Contracts`,
@@ -109,8 +110,8 @@ NuGet-пакетов в самом приложении нет; DTO и клие�
 **Ключевые возможности**:
 - `AgentClient` + `Contracts` — подмножество API агента из mining-fleet (loopback, `X-Fleet-Token`)
 - `IncomeService` — оценка CPU (HashVault: средний хешрейт за 24 ч × 86400 × награда / сложность
-  − комиссия пула, × XMR/RUB) и оценка GPU (конверсия `profit24hPer1Ghs` из LuckyPool − комиссия,
-  × XTM/RUB из CoinGecko); котировки старше двух часов отклоняются
+  − комиссия пула, × XMR/RUB) и оценка GPU (Kryptex Pearl `estimated_profit_day` × `(1 - fee)` × PRL/RUB,
+  либо конверсия `profit24hPer1Ghs` из LuckyPool − комиссия × XTM/RUB из CoinGecko); котировки старше двух часов отклоняются
 - `ResourceMonitor` — загрузка CPU (`GetSystemTimes`), RAM (`GlobalMemoryStatusEx`), диски (`DriveInfo`)
 
 ### 4. **Тесты**
@@ -190,8 +191,8 @@ powershell -c "irm https://raw.githubusercontent.com/XYphrodite/MiningSwitch/mai
 
 ## Информация о документе
 
-**Обновлено**: 2026-10-07
-**Версия**: 2.0
+**Обновлено**: 2026-10-29
+**Версия**: 4.1
 **Статус**: Активный
 **Репозиторий**: https://github.com/XYphrodite/MiningSwitch
 **Связанные документы**: `README.md` (русский), [mining-fleet](https://github.com/XYphrodite/mining-fleet), <https://hashvault.pro/monero/api>

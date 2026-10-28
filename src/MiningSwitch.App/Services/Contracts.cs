@@ -7,6 +7,12 @@ namespace MiningSwitch.App.Services;
 
 public sealed record CommandResultDto(bool Ok, string Message);
 
+public enum GpuMinerSoftware
+{
+    LolMiner = 0,
+    SrMiner = 1,
+}
+
 public sealed record MinerStatusDto
 {
     public bool Installed { get; init; }
@@ -39,6 +45,7 @@ public sealed record GpuDeviceStatusDto(
 public sealed record GpuMinerStatusDto
 {
     public bool Running { get; init; }
+    public GpuMinerSoftware? Software { get; init; }
     public string? Algorithm { get; init; }
     public string? Pool { get; init; }
     public double? Hashrate { get; init; }
@@ -58,6 +65,7 @@ public sealed record GpuPauseRuleDto
 public sealed record GpuMinerSettingsDto
 {
     public bool? Enabled { get; init; }
+    public GpuMinerSoftware? Miner { get; init; }
     public string? Algorithm { get; init; }
     public string? PoolUrl { get; init; }
     public string? User { get; init; }

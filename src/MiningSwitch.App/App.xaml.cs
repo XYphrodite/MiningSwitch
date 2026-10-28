@@ -104,6 +104,10 @@ public partial class App : Application
             report["agent"] = "ok";
             report["minerRunning"] = miner?.Running;
             report["gpuRunning"] = gpu?.Running;
+            report["gpuSoftware"] = (gpu?.Software ?? config?.GpuMiner?.Miner)?.ToString();
+            report["gpuRate"] = gpu is { Running: true, Hashrate: > 0 }
+                ? IncomeMath.FormatGpuRate(gpu.Hashrate, gpu.HashrateUnit)
+                : null;
 
             if (miner is not null && config is not null)
             {
@@ -113,6 +117,8 @@ public partial class App : Application
                     var snapshot = income.GetSnapshotAsync(miner, config, default).GetAwaiter().GetResult();
                     report["cpuRub24"] = snapshot.Cpu.WorkerRub24;
                     report["fleetRub24"] = snapshot.FleetRub24;
+                    report["gpuCoin"] = snapshot.Gpu?.Coin;
+                    report["gpuAvg24"] = snapshot.Gpu is { } g ? IncomeMath.FormatGpuRate(g.Average24, g.Unit) : null;
                     report["gpuRub24"] = snapshot.Gpu?.WorkerRub24;
                     report["gpuError"] = snapshot.GpuError;
                 }

@@ -26,6 +26,7 @@ public partial class MainWindow : Window
 
     private bool _online, _busy, _running, _gpuRunning, _gpuKnown, _cpuKnown, _manualOff, _exitRequested;
     private bool _pollBusy, _incomeBusy, _gpuAvailable = true;
+    private GpuMinerSoftware? _configuredGpuMiner;
     private DateTimeOffset _lastConfigAt = DateTimeOffset.MinValue;
     private IncomeSnapshot? _lastIncome;
 
@@ -119,7 +120,11 @@ public partial class MainWindow : Window
                 if (now - _lastConfigAt >= TimeSpan.FromSeconds(30))
                 {
                     var config = await _client.GetConfigAsync(default);
-                    if (config is not null) _manualOff = config.ManualOff;
+                    if (config is not null)
+                    {
+                        _manualOff = config.ManualOff;
+                        _configuredGpuMiner = config.GpuMiner?.Miner;
+                    }
                     _lastConfigAt = now;
                 }
 
@@ -135,8 +140,16 @@ public partial class MainWindow : Window
                 var gpu = await _client.GetGpuAsync(default);
                 _gpuKnown = true;
                 _gpuAvailable = gpu is not null;
+                var isSrMiner = (gpu?.Software ?? _configuredGpuMiner) == GpuMinerSoftware.SrMiner
+                    || string.Equals(gpu?.Algorithm, "pearlhash", StringComparison.OrdinalIgnoreCase);
+                GpuTitleLabel.Text = gpu is null && _configuredGpuMiner is null
+                    ? "GPU · видеокарта"
+                    : isSrMiner
+                        ? "SRBMiner · видеокарта"
+                        : "lolMiner · видеокарта";
                 if (gpu is null)
                 {
+                    _gpuRunning = false;
                     GpuStatusLabel.Text = "GPU-майнер не поддерживается";
                     GpuStatusLabel.Foreground = Muted;
                     GpuRateLabel.Text = "—";
@@ -146,8 +159,8 @@ public partial class MainWindow : Window
                     _gpuRunning = gpu.Running;
                     GpuStatusLabel.Text = gpu.Running ? "GPU майнит" : "GPU остановлен";
                     GpuStatusLabel.Foreground = gpu.Running ? Accent : Idle;
-                    GpuRateLabel.Text = gpu.Running && gpu.Hashrate is { } rate
-                        ? $"{rate:N2} {gpu.HashrateUnit}"
+                    GpuRateLabel.Text = gpu.Running && gpu.Hashrate is > 0
+                        ? IncomeMath.FormatGpuRate(gpu.Hashrate, gpu.HashrateUnit)
                         : "—";
                 }
 
@@ -235,7 +248,7 @@ public partial class MainWindow : Window
             IncomeDayLabel.Text = $"≈ {snapshot.WorkerRub24:N2} ₽ / сутки";
             IncomeDetailLabel.Text =
                 $"CPU ≈ {cpuRub:N2} ₽  +  GPU ≈ {gpu.WorkerRub24:N2} ₽{nl}" +
-                $"{snapshot.Cpu.Average24:N0} H/s CPU · {gpu.Average24:N2} H/s GPU в среднем за 24 ч";
+                $"{snapshot.Cpu.Average24:N0} H/s CPU · {IncomeMath.FormatGpuRate(gpu.Average24, gpu.Unit)} GPU в среднем за 24 ч";
             if (gpu.Note is not null) IncomeDetailLabel.Text += nl + gpu.Note;
             FleetIncomeLabel.Text = $"≈ {snapshot.FleetRub24:N2} ₽ / сутки";
             FleetDetailsLabel.Text =
@@ -252,6 +265,8 @@ public partial class MainWindow : Window
 
         IncomeNoteLabel.Foreground = Muted;
         IncomeNoteLabel.Text = $"Обновлено {snapshot.FetchedAt:HH:mm}. XMR {snapshot.Cpu.RubRate:N0} ₽";
+        if (snapshot.Gpu is { } gpuRateQuote)
+            IncomeNoteLabel.Text += $" · {gpuRateQuote.Coin} {gpuRateQuote.RubRate:N2} ₽";
         if (snapshot.GpuError is not null) IncomeNoteLabel.Text += " · " + snapshot.GpuError;
     }
 
@@ -377,14 +392,16 @@ public partial class MainWindow : Window
             StatusLabel.Text = _manualOff ? "Майнинг выключен" : "Майнинг на паузе";
             StatusLabel.Foreground = Idle;
             PowerLabel.Text = _manualOff && !_gpuRunning ? "Включить CPU + GPU" : "Выключить CPU + GPU";
-            PowerButton.Background = Idle;
+            PowerButton.Background = _gpuRunning ? Accent : Idle;
         }
 
-        _tray.SetStatus(_gpuRunning
-            ? "Mining Switch — GPU работает"
-            : _running
-                ? "Mining Switch — майнинг работает"
-                : "Mining Switch — майнер остановлен");
+        _tray.SetStatus(_running && _gpuRunning
+            ? "Mining Switch — CPU и GPU работают"
+            : _gpuRunning
+                ? "Mining Switch — GPU работает"
+                : _running
+                    ? "Mining Switch — CPU работает"
+                    : "Mining Switch — майнер остановлен");
         _tray.SetMenuState(
             canEnable: _online && !_busy && (!_running || !_gpuRunning),
             canDisable: _online && !_busy);

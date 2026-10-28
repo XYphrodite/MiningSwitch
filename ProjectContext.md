@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-Mining Switch is a Windows desktop dashboard for a mining PC: one big button starts and stops XMRig (CPU) and lolMiner (GPU) through the local `mining-fleet-agent`, a tray icon keeps it one click away, and rough income estimates cover both this PC and every worker of the fleet's shared wallets. It never touches wallets, credentials or payout settings.
+Mining Switch is a Windows desktop dashboard for a mining PC: one big button starts and stops XMRig (CPU) and the GPU miner (SRBMiner / lolMiner) through the local `mining-fleet-agent`, a tray icon keeps it one click away, and rough income estimates cover both this PC and every worker of the fleet's shared wallets. It never touches wallets, credentials or payout settings.
 
 **Platform**: Windows 10/11, .NET 10 (`net10.0-windows`), WPF
 **Language**: C# 14
@@ -25,8 +25,9 @@ Mining Switch is a Windows desktop dashboard for a mining PC: one big button sta
 | Microsoft.WindowsDesktop.App | 10.x | WPF + WinForms (tray icon) |
 | `mining-fleet-agent` | Installed separately | Local miner control API (`/api/v1`, loopback) |
 | HashVault public API | v3 | CPU worker stats, network figures, XMR/RUB rate |
+| Kryptex Pool public API | v1 / v3 | GPU (Pearl `pearlhash`) worker 24h stats and PPS+ profit rate |
 | LuckyPool public API | taric29 | GPU (Tari C29) worker stats, pool calculator rate |
-| CoinGecko public API | v3 | XTM/RUB rate |
+| CoinGecko public API | v3 | PRL/RUB (`pearl-2`) and XTM/RUB (`minotari`) spot rates (10m cache) |
 
 No NuGet packages in the app itself; DTOs and the agent client are adapted from
 [mining-fleet](https://github.com/XYphrodite/mining-fleet) (`MiningFleet.Contracts`,
@@ -108,8 +109,8 @@ Key design points:
 **Key Features**:
 - `AgentClient` + `Contracts` — mining-fleet's agent API subset (loopback, `X-Fleet-Token`)
 - `IncomeService` — CPU estimate (HashVault: avg 24 h hashrate × 86400 × reward / difficulty
-  − pool fee, × XMR/RUB) and GPU estimate (LuckyPool `profit24hPer1Ghs` conversion − fee,
-  × XTM/RUB from CoinGecko); quotes older than 2 hours are refused
+  − pool fee, × XMR/RUB) and GPU estimate (Kryptex Pearl `estimated_profit_day` × `(1 - fee)` × PRL/RUB,
+  or LuckyPool `profit24hPer1Ghs` conversion − fee × XTM/RUB from CoinGecko); quotes older than 2 hours are refused
 - `ResourceMonitor` — CPU load (`GetSystemTimes`), RAM (`GlobalMemoryStatusEx`), disks (`DriveInfo`)
 
 ### 4. **Tests**
@@ -189,8 +190,8 @@ powershell -c "irm https://raw.githubusercontent.com/XYphrodite/MiningSwitch/mai
 
 ## Document Information
 
-**Last Updated**: 2026-10-07
-**Version**: 2.0
+**Last Updated**: 2026-10-29
+**Version**: 4.1
 **Status**: Active
 **Repository**: https://github.com/XYphrodite/MiningSwitch
 **Related Docs**: `README.md` (Russian), [mining-fleet](https://github.com/XYphrodite/mining-fleet), <https://hashvault.pro/monero/api>

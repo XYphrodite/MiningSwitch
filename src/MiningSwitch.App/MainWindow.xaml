@@ -58,7 +58,7 @@
                 </Border>
                 <Border Background="#1B2331" CornerRadius="16" Padding="18" Margin="0,12,0,0">
                     <StackPanel>
-                        <TextBlock Text="lolMiner · видеокарта" Foreground="#929FB4" FontSize="12"/>
+                        <TextBlock x:Name="GpuTitleLabel" Text="GPU · видеокарта" Foreground="#929FB4" FontSize="12"/>
                         <TextBlock x:Name="GpuStatusLabel" Text="Проверяем GPU…" FontSize="18" FontWeight="SemiBold" Margin="0,6,0,6"/>
                         <TextBlock x:Name="GpuRateLabel" Text="—" FontSize="20"/>
                     </StackPanel>
