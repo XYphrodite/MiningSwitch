@@ -31,7 +31,7 @@ public partial class MainWindow : Window
     private readonly IncomeService _income = new();
 
     private bool _online, _busy, _running, _gpuRunning, _gpuKnown, _cpuKnown, _manualOff, _exitRequested;
-    private bool _pollBusy, _incomeBusy, _updateBusy, _gpuAvailable = true;
+    private bool _pollBusy, _incomeBusy, _updateBusy, _gpuAvailable, _gpuExecutableConfigured;
     private GpuMinerSoftware? _configuredGpuMiner;
     private DateTimeOffset _lastConfigAt = DateTimeOffset.MinValue;
     private IncomeSnapshot? _lastIncome;
@@ -138,6 +138,7 @@ public partial class MainWindow : Window
                     {
                         _manualOff = config.ManualOff;
                         _configuredGpuMiner = config.GpuMiner?.Miner;
+                        _gpuExecutableConfigured = !string.IsNullOrWhiteSpace(config.GpuMiner?.ExecutablePath);
                     }
                     _lastConfigAt = now;
                 }
@@ -153,24 +154,29 @@ public partial class MainWindow : Window
 
                 var gpu = await _client.GetGpuAsync(default);
                 _gpuKnown = true;
-                _gpuAvailable = gpu is not null;
+                _gpuAvailable = gpu is not null && (_gpuExecutableConfigured || gpu.Running);
                 var isSrMiner = (gpu?.Software ?? _configuredGpuMiner) == GpuMinerSoftware.SrMiner
                     || string.Equals(gpu?.Algorithm, "pearlhash", StringComparison.OrdinalIgnoreCase);
-                GpuTitleLabel.Text = gpu is null && _configuredGpuMiner is null
-                    ? "GPU · видеокарта"
-                    : isSrMiner
-                        ? "SRBMiner · видеокарта"
-                        : "lolMiner · видеокарта";
                 if (gpu is null)
                 {
                     _gpuRunning = false;
+                    GpuTitleLabel.Text = "GPU · видеокарта";
                     GpuStatusLabel.Text = "GPU-майнер не поддерживается";
+                    GpuStatusLabel.Foreground = Muted;
+                    GpuRateLabel.Text = "—";
+                }
+                else if (!_gpuAvailable)
+                {
+                    _gpuRunning = false;
+                    GpuTitleLabel.Text = "GPU · видеокарта";
+                    GpuStatusLabel.Text = "Не используется на этом ПК";
                     GpuStatusLabel.Foreground = Muted;
                     GpuRateLabel.Text = "—";
                 }
                 else
                 {
                     _gpuRunning = gpu.Running;
+                    GpuTitleLabel.Text = isSrMiner ? "SRBMiner · видеокарта" : "lolMiner · видеокарта";
                     GpuStatusLabel.Text = gpu.Running ? "GPU майнит" : "GPU остановлен";
                     GpuStatusLabel.Foreground = gpu.Running ? Accent : Idle;
                     GpuRateLabel.Text = gpu.Running && gpu.Hashrate is > 0
@@ -309,6 +315,7 @@ public partial class MainWindow : Window
                 await CommandAsync("stop", _client!.StopAsync(default), errors);
                 await PutPolicyAsync(on: false, errors);
             }
+            _lastConfigAt = DateTimeOffset.MinValue;
             await PollAgentAsync();
         }
         catch (Exception ex)
@@ -326,6 +333,7 @@ public partial class MainWindow : Window
     {
         try
         {
+            var enableGpu = on && _gpuAvailable;
             var patch = new MinerConfigDto
             {
                 AutoStartMiner = on,
@@ -333,8 +341,8 @@ public partial class MainWindow : Window
                 MinerStoppedByPause = false,
                 MinerStoppedByThrottle = false,
                 GpuStoppedByPause = false,
-                GpuWanted = on,
-                GpuMiner = new GpuMinerSettingsDto { Enabled = on },
+                GpuWanted = enableGpu,
+                GpuMiner = new GpuMinerSettingsDto { Enabled = enableGpu },
             };
             await _client!.PutConfigAsync(patch, default);
         }
@@ -365,10 +373,14 @@ public partial class MainWindow : Window
                 : !_running && (!_gpuAvailable || !_gpuRunning) && _manualOff);
         if (confirmed)
             SetNote(enable
-                ? "CPU и GPU запущены. Общая кнопка выключает оба майнера."
-                : "CPU и GPU выключены. Автозапуск отключён до твоей команды.");
+                ? (_gpuAvailable
+                    ? "CPU и GPU запущены. Общая кнопка выключает оба майнера."
+                    : "Майнинг на процессоре запущен.")
+                : (_gpuAvailable
+                    ? "CPU и GPU выключены. Автозапуск отключён до твоей команды."
+                    : "Майнинг выключен. Автозапуск отключён до твоей команды."));
         else
-            SetNote("Команда выполнена не полностью. Проверь статусы CPU и GPU. " + string.Join(" ", errors), error: true);
+            SetNote("Команда выполнена не полностью. Проверь статусы майнеров. " + string.Join(" ", errors), error: true);
     }
 
     private void RefreshControls()
@@ -394,18 +406,19 @@ public partial class MainWindow : Window
             return;
         }
 
+        var scope = _gpuAvailable ? "CPU + GPU" : "майнинг";
         if (_running)
         {
             StatusLabel.Text = "Майнинг работает";
             StatusLabel.Foreground = Accent;
-            PowerLabel.Text = "Выключить CPU + GPU";
+            PowerLabel.Text = $"Выключить {scope}";
             PowerButton.Background = Accent;
         }
         else
         {
             StatusLabel.Text = _manualOff ? "Майнинг выключен" : "Майнинг на паузе";
             StatusLabel.Foreground = Idle;
-            PowerLabel.Text = _manualOff && !_gpuRunning ? "Включить CPU + GPU" : "Выключить CPU + GPU";
+            PowerLabel.Text = _manualOff && !_gpuRunning ? $"Включить {scope}" : $"Выключить {scope}";
             PowerButton.Background = _gpuRunning ? Accent : Idle;
         }
 
@@ -417,7 +430,7 @@ public partial class MainWindow : Window
                     ? "Mining Switch — CPU работает"
                     : "Mining Switch — майнер остановлен");
         _tray.SetMenuState(
-            canEnable: _online && !_busy && (!_running || !_gpuRunning),
+            canEnable: _online && !_busy && (!_running || (_gpuAvailable && !_gpuRunning)),
             canDisable: _online && !_busy);
     }
 
