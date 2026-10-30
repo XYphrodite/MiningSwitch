@@ -41,9 +41,12 @@ public partial class MainWindow : Window
     {
         _showEventAccessor = showEventAccessor;
         InitializeComponent();
+        WindowFrame.Hook(this);
         Title = $"Mining Switch {MiningSwitchUpdate.DisplayVersion}";
+        TopBarTitleLabel.Text = Title;
         VersionLabel.Text = MiningSwitchUpdate.DisplayVersion;
         ComputerLabel.Text = $"{Environment.MachineName}  /  ЛОКАЛЬНОЕ УПРАВЛЕНИЕ";
+        UpdateMaximizeGlyph();
 
         _tray.OpenRequested += ShowWindow;
         _tray.EnableRequested += () => _ = StartControlAsync(enable: true);
@@ -73,7 +76,8 @@ public partial class MainWindow : Window
     private void ShowWindow()
     {
         Show();
-        WindowState = WindowState.Normal;
+        if (WindowState == WindowState.Minimized)
+            WindowState = WindowState.Normal;
         Activate();
     }
 
@@ -590,5 +594,26 @@ public partial class MainWindow : Window
         UpdateButton.Content = "Проверить обновления";
         UpdateButton.Background = SmallSurface;
         UpdateButton.Foreground = LightText;
+    }
+
+    // ---- custom TopBar (TerminalV style) -------------------------------
+
+    private void Minimize_Click(object sender, RoutedEventArgs e) =>
+        WindowState = WindowState.Minimized;
+
+    private void Maximize_Click(object sender, RoutedEventArgs e) =>
+        WindowState = WindowState == WindowState.Maximized ? WindowState.Normal : WindowState.Maximized;
+
+    private void Close_Click(object sender, RoutedEventArgs e) => Close();
+
+    private void OnWindowStateChanged(object? sender, EventArgs e) => UpdateMaximizeGlyph();
+
+    private void UpdateMaximizeGlyph()
+    {
+        var maximized = WindowState == WindowState.Maximized;
+        MaximizeGlyph.Visibility = maximized ? Visibility.Collapsed : Visibility.Visible;
+        RestoreGlyph.Visibility = maximized ? Visibility.Visible : Visibility.Collapsed;
+        MaximizeButton.ToolTip = maximized ? "Восстановить" : "Развернуть";
+        OuterFrame.BorderThickness = maximized ? new Thickness(0) : new Thickness(1);
     }
 }
