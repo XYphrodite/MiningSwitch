@@ -202,10 +202,12 @@ public partial class App : Application
                 try
                 {
                     using var income = new IncomeService();
-                    var snapshot = income.GetSnapshotAsync(miner, config, default).GetAwaiter().GetResult();
+                    var snapshot = income.GetSnapshotAsync(miner, config, default, gpu).GetAwaiter().GetResult();
                     report["cpuRub24"] = snapshot.Cpu.WorkerRub24;
+                    report["workerRub24"] = snapshot.WorkerRub24;
                     report["fleetRub24"] = snapshot.FleetRub24;
                     report["gpuCoin"] = snapshot.Gpu?.Coin;
+                    report["gpuPriceRub"] = snapshot.Gpu?.RubRate;
                     report["gpuAvg24"] = snapshot.Gpu is { } g ? IncomeMath.FormatGpuRate(g.Average24, g.Unit) : null;
                     report["gpuRub24"] = snapshot.Gpu?.WorkerRub24;
                     report["gpuError"] = snapshot.GpuError;

@@ -161,7 +161,8 @@ public partial class MainWindow : Window
                 _gpuKnown = true;
                 _gpuAvailable = gpu is not null && (_gpuExecutableConfigured || gpu.Running);
                 var isSrMiner = (gpu?.Software ?? _configuredGpuMiner) == GpuMinerSoftware.SrMiner
-                    || string.Equals(gpu?.Algorithm, "pearlhash", StringComparison.OrdinalIgnoreCase);
+                    || string.Equals(gpu?.Algorithm, "pearlhash", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(gpu?.Algorithm, "quantus", StringComparison.OrdinalIgnoreCase);
                 if (gpu is null)
                 {
                     _gpuRunning = false;
@@ -236,11 +237,16 @@ public partial class MainWindow : Window
         try
         {
             if (_client is null || !_online) throw new InvalidOperationException("Нет связи с агентом.");
-            var miner = await _client.GetMinerAsync(default)
+            var minerTask = _client.GetMinerAsync(default);
+            var configTask = _client.GetConfigAsync(default);
+            var gpuTask = _client.GetGpuAsync(default);
+            await Task.WhenAll(minerTask, configTask, gpuTask);
+
+            var miner = minerTask.Result
                 ?? throw new InvalidOperationException("Агент не вернул статус майнера.");
-            var config = await _client.GetConfigAsync(default)
+            var config = configTask.Result
                 ?? throw new InvalidOperationException("Агент не вернул конфигурацию.");
-            var snapshot = await _income.GetSnapshotAsync(miner, config, default);
+            var snapshot = await _income.GetSnapshotAsync(miner, config, default, gpuTask.Result);
             ShowIncome(snapshot);
         }
         catch (Exception ex)

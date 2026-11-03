@@ -49,6 +49,8 @@ public class IncomeMathTests
     [InlineData("prl.kryptex.network:7048", "prl")]
     [InlineData("prl-eu.kryptex.network:7048", "prl")]
     [InlineData("stratum+ssl://prl-ru.kryptex.network:8048", "prl")]
+    [InlineData("qtc.kryptex.network:7049", "qtc")]
+    [InlineData("qtc-ru.kryptex.network:7049", "qtc")]
     [InlineData("xtm-c29-eu.kryptex.network:7040", "xtm-c29")]
     [InlineData("c29.luckypool.io:3118", null)]
     [InlineData(null, null)]
@@ -58,10 +60,32 @@ public class IncomeMathTests
     }
 
     [Fact]
+    public void Kryptex_prop_estimate_and_worker_window_selection_handle_quantus()
+    {
+        var netCoinsPerHsDay = IncomeMath.KryptexPropCoinsPerHashrateDay(
+            netHashrate: 37_612_150_453_683.0,
+            blockTimeSeconds: 12.0,
+            blockReward: 0.3,
+            feeFraction: 0.03);
+        var expected = 86400.0 / 12.0 * 0.3 / 37_612_150_453_683.0 * 0.97;
+        Assert.Equal(expected * 1e12, netCoinsPerHsDay * 1e12, precision: 9);
+
+        var now = new DateTimeOffset(2026, 11, 3, 6, 0, 0, TimeSpan.FromHours(3));
+        var opened20mAgo = now.AddMinutes(-20).ToUnixTimeMilliseconds();
+        var opened5hAgo = now.AddHours(-5).ToUnixTimeMilliseconds();
+        var opened2dAgo = now.AddDays(-2).ToUnixTimeMilliseconds();
+
+        Assert.Equal(82e6, IncomeMath.SelectKryptexWorkerRate(1e6, 10e6, 82e6, opened20mAgo, now));
+        Assert.Equal(75e6, IncomeMath.SelectKryptexWorkerRate(15e6, 75e6, 80e6, opened5hAgo, now));
+        Assert.Equal(60e6, IncomeMath.SelectKryptexWorkerRate(60e6, 80e6, 82e6, opened2dAgo, now));
+    }
+
+    [Fact]
     public void FormatGpuRate_scales_raw_hashes_and_preserves_custom_units()
     {
         var inv = CultureInfo.InvariantCulture;
         Assert.Equal("51.48 TH/s", IncomeMath.FormatGpuRate(51_479_178_915_826.5, "H/s", inv));
+        Assert.Equal("82.16 MH/s", IncomeMath.FormatGpuRate(82_160_000.0, "H/s", inv));
         Assert.Equal("0 H/s", IncomeMath.FormatGpuRate(0, "H/s", inv));
         Assert.Equal("4.52 g/s", IncomeMath.FormatGpuRate(4.52, "g/s", inv));
         Assert.Equal("—", IncomeMath.FormatGpuRate(null, "H/s", inv));

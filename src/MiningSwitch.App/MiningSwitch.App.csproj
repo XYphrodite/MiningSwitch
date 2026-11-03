@@ -15,7 +15,7 @@
     <RootNamespace>MiningSwitch.App</RootNamespace>
     <AssemblyName>MiningSwitch</AssemblyName>
     <ApplicationIcon>..\..\MiningSwitch.ico</ApplicationIcon>
-    <Version>4.3.1</Version>
+    <Version>4.3.2</Version>
     <Description>Mining Switch — дашборд управления майнингом на этом ПК</Description>
   </PropertyGroup>
 

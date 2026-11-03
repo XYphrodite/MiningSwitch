@@ -38,6 +38,32 @@ public static class IncomeMath
     public static double KryptexCoinsPerHashrateDay(double estimatedProfitDay, double feeFraction) =>
         estimatedProfitDay * (1 - feeFraction);
 
+    /// <summary>
+    /// Net coins per 1 unit of hashrate per day on Kryptex PROP pools (e.g. QTC Poseidon2, XTM C29),
+    /// where estimated_profit_day is null and block parameters define daily emission.
+    /// </summary>
+    public static double KryptexPropCoinsPerHashrateDay(
+        double netHashrate, double blockTimeSeconds, double blockReward, double feeFraction) =>
+        86400.0 / blockTimeSeconds * blockReward / netHashrate * (1 - feeFraction);
+
+    /// <summary>
+    /// Picks the most representative Kryptex worker average: Kryptex divides 24h averages by a full
+    /// 86,400 seconds even for a worker started 20 minutes ago, so short-lived sessions use 30m/3h windows.
+    /// </summary>
+    public static double SelectKryptexWorkerRate(
+        double avg24h, double avg3h, double avg30m, long? openedAtUnixMs, DateTimeOffset now)
+    {
+        if (openedAtUnixMs is > 0)
+        {
+            var age = now - DateTimeOffset.FromUnixTimeMilliseconds(openedAtUnixMs.Value);
+            if (age >= TimeSpan.Zero && age < TimeSpan.FromHours(3) && avg30m > avg24h)
+                return avg30m;
+            if (age >= TimeSpan.Zero && age < TimeSpan.FromHours(24) && avg3h > avg24h)
+                return avg3h;
+        }
+        return avg24h;
+    }
+
     /// <summary>Accepted-share difficulty values work at block reward / difficulty, in coins.</summary>
     public static double GpuCoinsPerShareHash(double networkReward, double coinUnits, double networkDifficulty) =>
         networkReward / coinUnits / networkDifficulty;
@@ -154,7 +180,10 @@ public sealed class IncomeService : IDisposable
     }
 
     public async Task<IncomeSnapshot> GetSnapshotAsync(
-        MinerStatusDto miner, MinerConfigDto config, CancellationToken ct)
+        MinerStatusDto miner,
+        MinerConfigDto config,
+        CancellationToken ct,
+        GpuMinerStatusDto? liveGpu = null)
     {
         var worker = (miner.WorkerName ?? config.WorkerName ?? "").Trim();
         if (string.IsNullOrWhiteSpace(worker) || string.IsNullOrWhiteSpace(miner.Wallet))
@@ -172,7 +201,8 @@ public sealed class IncomeService : IDisposable
         {
             // Even a switched-off card's wallet still answers for the fleet forecast; only
             // this PC's share is zero — a known zero, not missing data.
-            gpu = await GetGpuQuoteAsync(config.GpuMiner, Environment.MachineName, config.GpuMiner?.Enabled is true, ct);
+            var gpuActive = config.GpuMiner?.Enabled is true || liveGpu?.Running is true;
+            gpu = await GetGpuQuoteAsync(config.GpuMiner, Environment.MachineName, gpuActive, liveGpu, ct);
         }
         catch (Exception ex) when (ex is HttpRequestException or JsonException or InvalidOperationException or FormatException)
         {
@@ -237,19 +267,31 @@ public sealed class IncomeService : IDisposable
             count);
     }
 
+    private sealed record KryptexCoinSpec(
+        string Slug,
+        string Symbol,
+        string ExpectedAlgo,
+        string CoinGeckoId,
+        string Unit);
+
     private async Task<GpuQuote> GetGpuQuoteAsync(
-        GpuMinerSettingsDto? settings, string computerName, bool enabled, CancellationToken ct)
+        GpuMinerSettingsDto? settings,
+        string computerName,
+        bool enabled,
+        GpuMinerStatusDto? liveGpu,
+        CancellationToken ct)
     {
         if (settings is null || string.IsNullOrWhiteSpace(settings.User))
             throw new InvalidOperationException("GPU-майнер не настроен.");
 
-        // Pools disagree about the login shape: "address.worker" and "address/worker" both exist.
+        // Pools disagree about the login shape: "address.worker", "address/worker", and "email@domain/worker".
         var login = settings.User.Trim();
-        var dot = login.IndexOfAny(['.', '/']);
-        if (dot <= 0 || dot == login.Length - 1)
+        var slash = login.IndexOf('/');
+        var sep = slash > 0 ? slash : (login.Contains('@') ? -1 : login.IndexOf('.'));
+        if (sep <= 0 || sep == login.Length - 1)
             throw new InvalidOperationException("Для отдельного учёта GPU нужно имя воркера.");
-        var address = login[..dot].Trim();
-        var worker = login[(dot + 1)..].Trim();
+        var address = login[..sep].Trim();
+        var worker = login[(sep + 1)..].Trim();
         if (address.Length == 0 || worker.Length == 0)
             throw new InvalidOperationException("Для отдельного учёта GPU нужно имя воркера.");
 
@@ -262,36 +304,68 @@ public sealed class IncomeService : IDisposable
 
         if (IncomeMath.KryptexPoolSlug(settings.PoolUrl) is { } slug)
         {
-            return slug switch
+            var spec = slug switch
             {
-                "prl" => await GetKryptexPearlQuoteAsync(address, worker, enabled, mine, ct),
-                _ => throw new InvalidOperationException($"Монета Kryptex '{slug}' ещё не поддержана."),
+                "prl" => new KryptexCoinSpec("prl", "PRL", "PearlHash", "pearl-2", "H/s"),
+                "qtc" => new KryptexCoinSpec("qtc", "QTC", "Poseidon2", "quantus", "H/s"),
+                "xtm-c29" => new KryptexCoinSpec("xtm-c29", "XTM", "Cuckaroo29", "minotari", "g/s"),
+                _ => null,
             };
+            if (spec is null)
+                throw new InvalidOperationException($"Монета Kryptex '{slug}' ещё не поддержана.");
+
+            return await GetKryptexCoinQuoteAsync(spec, address, worker, enabled, mine, liveGpu, ct);
         }
 
         throw new InvalidOperationException("Этот GPU пул не поддержан.");
     }
 
-    private async Task<GpuQuote> GetKryptexPearlQuoteAsync(
-        string address, string worker, bool enabled, bool mine, CancellationToken ct)
+    private async Task<GpuQuote> GetKryptexCoinQuoteAsync(
+        KryptexCoinSpec spec,
+        string address,
+        string worker,
+        bool enabled,
+        bool mine,
+        GpuMinerStatusDto? liveGpu,
+        CancellationToken ct)
     {
-        var pool = await GetJsonAsync("https://pool.kryptex.com/prl/api/v1/pool/stats", ct)
-            ?? throw new InvalidOperationException("Пул Kryptex PRL недоступен.");
-        var wallet = await GetJsonAsync(
-            "https://pool.kryptex.com/prl/api/v3/miner/workers/" + Uri.EscapeDataString(address), ct)
+        var poolTask = GetJsonAsync($"https://pool.kryptex.com/{spec.Slug}/api/v1/pool/stats", ct);
+        var walletTask = GetJsonAsync(
+            $"https://pool.kryptex.com/{spec.Slug}/api/v3/miner/workers/" + Uri.EscapeDataString(address), ct);
+        var priceTask = GetCoinGeckoRubPriceAsync(spec.CoinGeckoId, spec.Symbol, ct);
+        await Task.WhenAll(poolTask, walletTask, priceTask);
+
+        var pool = poolTask.Result
+            ?? throw new InvalidOperationException($"Пул Kryptex {spec.Symbol} недоступен.");
+        var wallet = walletTask.Result
             ?? throw new InvalidOperationException("Статистика GPU-кошелька на Kryptex недоступна.");
 
-        if (!string.Equals(String(pool, "ticker"), "prl", StringComparison.OrdinalIgnoreCase)
-            || !string.Equals(String(pool, "algo"), "PearlHash", StringComparison.OrdinalIgnoreCase))
-            throw new InvalidOperationException("Неожиданный алгоритм пула Kryptex.");
+        if (!string.Equals(String(pool, "ticker"), spec.Symbol, StringComparison.OrdinalIgnoreCase)
+            || !string.Equals(String(pool, "algo"), spec.ExpectedAlgo, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException($"Неожиданный алгоритм пула Kryptex {spec.Symbol}.");
 
-        var estimatedProfitDay = Number(pool, "estimated_profit_day") ?? 0;
         var fee = Number(pool, "fee");
-        if (estimatedProfitDay <= 0 || fee is null or < 0 or >= 1)
+        if (fee is null or < 0 or >= 1)
             throw new InvalidOperationException("Неполная оценка GPU от Kryptex.");
 
-        var (rubRate, priceTime) = await GetCoinGeckoRubPriceAsync("pearl-2", "PRL", ct);
-        var coinsPerRateDay = IncomeMath.KryptexCoinsPerHashrateDay(estimatedProfitDay, fee.Value);
+        double coinsPerRateDay;
+        if (Number(pool, "estimated_profit_day") is { } est && est > 0 && double.IsFinite(est))
+        {
+            coinsPerRateDay = IncomeMath.KryptexCoinsPerHashrateDay(est, fee.Value);
+        }
+        else if (Number(pool, "net_hashrate") is { } netHr && netHr > 0 && double.IsFinite(netHr)
+                 && Number(pool, "block_time") is { } blockTime && blockTime > 0 && double.IsFinite(blockTime)
+                 && Number(pool, "block_reward") is { } reward && reward > 0 && double.IsFinite(reward))
+        {
+            coinsPerRateDay = IncomeMath.KryptexPropCoinsPerHashrateDay(netHr, blockTime, reward, fee.Value);
+        }
+        else
+        {
+            throw new InvalidOperationException("Неполная оценка GPU от Kryptex.");
+        }
+
+        var (rubRate, priceTime) = priceTask.Result;
+        var now = DateTimeOffset.UtcNow;
 
         var workers = Path(wallet, "results");
         double workerRate = 0, fleetRate = 0;
@@ -301,13 +375,18 @@ public sealed class IncomeService : IDisposable
         {
             foreach (var item in workers.EnumerateArray())
             {
-                var average = Number(item, "avg_hashrate_24h") ?? -1;
-                if (average < 0) throw new InvalidOperationException("Нет средней скорости GPU за сутки.");
-                fleetRate += average;
+                var avg24 = Number(item, "avg_hashrate_24h") ?? -1;
+                if (avg24 < 0) throw new InvalidOperationException("Нет средней скорости GPU за сутки.");
+                var avg3h = Number(item, "avg_hashrate_3h") ?? 0;
+                var avg30m = Number(item, "avg_hashrate_30m") ?? 0;
+                var openedAtMs = (long?)Number(item, "opened_at");
+                var effective = IncomeMath.SelectKryptexWorkerRate(avg24, avg3h, avg30m, openedAtMs, now);
+
+                fleetRate += effective;
                 count++;
                 if (mine && string.Equals(String(item, "worker"), worker, StringComparison.OrdinalIgnoreCase))
                 {
-                    workerRate = average;
+                    workerRate = effective;
                     found = true;
                 }
             }
@@ -318,6 +397,13 @@ public sealed class IncomeService : IDisposable
         {
             workerRate = 0;
             note = enabled ? "GPU-воркер не этого ПК — его доход не приписывается." : "GPU выключен — 0 ₽.";
+        }
+        else if (workerRate <= 0 && liveGpu is { Running: true, Hashrate: > 0 })
+        {
+            workerRate = liveGpu.Hashrate.Value;
+            fleetRate += workerRate;
+            if (!found) count++;
+            note = "Пул ещё копит статистику за 24 ч — расчёт по текущей скорости карты.";
         }
         else if (!found)
         {
@@ -333,8 +419,8 @@ public sealed class IncomeService : IDisposable
             priceTime,
             count)
         {
-            Coin = "PRL",
-            Unit = "H/s",
+            Coin = spec.Symbol,
+            Unit = spec.Unit,
             Note = note,
         };
     }
@@ -416,18 +502,31 @@ public sealed class IncomeService : IDisposable
             var price = await GetJsonAsync(
                 $"https://api.coingecko.com/api/v3/simple/price?ids={Uri.EscapeDataString(coinGeckoId)}&vs_currencies=rub&include_last_updated_at=true",
                 ct);
-            if (price is null)
+            double rubRate = 0;
+            var priceTime = DateTimeOffset.MinValue;
+            if (price is not null)
+            {
+                var coin = Path(price.Value, coinGeckoId);
+                rubRate = Number(coin, "rub") ?? 0;
+                priceTime = DateTimeOffset.FromUnixTimeSeconds((long)(Number(coin, "last_updated_at") ?? 0));
+            }
+
+            if (rubRate <= 0 || !IncomeMath.IsFresh(priceTime, now))
+            {
+                var krxRub = await GetKryptexSpotRubPriceAsync(symbol, ct);
+                if (krxRub is > 0)
+                {
+                    rubRate = krxRub.Value;
+                    priceTime = now;
+                }
+            }
+
+            if (rubRate <= 0)
             {
                 if (_priceCache.TryGetValue(coinGeckoId, out var fallback) && IncomeMath.IsFresh(fallback.PriceTimeUtc, now))
                     return (fallback.RubRate, fallback.PriceTimeUtc);
                 throw new InvalidOperationException($"Курс {symbol}/RUB недоступен.");
             }
-
-            var coin = Path(price.Value, coinGeckoId);
-            var rubRate = Number(coin, "rub") ?? 0;
-            var priceTime = DateTimeOffset.FromUnixTimeSeconds((long)(Number(coin, "last_updated_at") ?? 0));
-            if (rubRate <= 0)
-                throw new InvalidOperationException("Неполная оценка GPU.");
             if (!IncomeMath.IsFresh(priceTime, now))
                 throw new InvalidOperationException($"Курс {symbol}/RUB устарел.");
 
@@ -438,6 +537,17 @@ public sealed class IncomeService : IDisposable
         {
             _priceGate.Release();
         }
+    }
+
+    private async Task<double?> GetKryptexSpotRubPriceAsync(string symbol, CancellationToken ct)
+    {
+        var rates = await GetJsonAsync("https://pool.kryptex.com/api/v1/rates", ct);
+        if (rates is null) return null;
+        var crypto = Path(rates.Value, "crypto");
+        var fiat = Path(rates.Value, "fiat");
+        var usd = Number(crypto, symbol.ToUpperInvariant());
+        var rubPerUsd = Number(fiat, "RUB");
+        return usd is > 0 && rubPerUsd is > 0 ? usd.Value * rubPerUsd.Value : null;
     }
 
     private static (double RubRate, DateTimeOffset PriceTimeUtc) ReadRubPrice(JsonElement market)
