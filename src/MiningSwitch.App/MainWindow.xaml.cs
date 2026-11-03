@@ -29,6 +29,7 @@ public partial class MainWindow : Window
 
     private AgentClient? _client;
     private readonly IncomeService _income = new();
+    private readonly NoteBannerState _noteState = new();
 
     private bool _online, _busy, _running, _gpuRunning, _gpuKnown, _cpuKnown, _manualOff, _exitRequested;
     private bool _pollBusy, _incomeBusy, _updateBusy, _gpuAvailable, _gpuExecutableConfigured;
@@ -126,7 +127,7 @@ public partial class MainWindow : Window
                 try { _client = new AgentClient(AgentEndpoint.Discover()); }
                 catch (Exception ex)
                 {
-                    SetNote(ex.Message, error: true);
+                    SetPollErrorNote(ex.Message);
                     RefreshControls();
                     return;
                 }
@@ -188,6 +189,9 @@ public partial class MainWindow : Window
                         : "—";
                 }
 
+                if (_online && !_busy && _noteState.ClearPollErrorOnRecovery())
+                    ApplyNoteState();
+
                 RefreshControls();
 
                 // Income needs the agent's wallet and worker; fetch it as soon as there is a link.
@@ -197,7 +201,9 @@ public partial class MainWindow : Window
             catch (Exception ex)
             {
                 _online = false;
-                SetNote("Не удалось подтвердить состояние. " + ex.Message, error: true);
+                _client?.Dispose();
+                _client = null;
+                SetPollErrorNote("Не удалось подтвердить состояние. " + ex.Message);
                 RefreshControls();
             }
         }
@@ -440,8 +446,20 @@ public partial class MainWindow : Window
 
     private void SetNote(string text, bool error = false)
     {
-        NoteLabel.Text = text;
-        NoteLabel.Foreground = error ? Error : Muted;
+        _noteState.SetControlNote(text, error);
+        ApplyNoteState();
+    }
+
+    private void SetPollErrorNote(string text)
+    {
+        _noteState.SetPollError(text);
+        ApplyNoteState();
+    }
+
+    private void ApplyNoteState()
+    {
+        NoteLabel.Text = _noteState.Text;
+        NoteLabel.Foreground = _noteState.IsError ? Error : Muted;
     }
 
     private void OnRefreshIncome(object sender, RoutedEventArgs e) => _ = UpdateIncomeAsync();
