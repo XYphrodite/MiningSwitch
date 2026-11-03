@@ -206,6 +206,11 @@ public partial class App : Application
                     report["cpuRub24"] = snapshot.Cpu.WorkerRub24;
                     report["workerRub24"] = snapshot.WorkerRub24;
                     report["fleetRub24"] = snapshot.FleetRub24;
+                    report["fleetGpuRub24"] = snapshot.FleetGpuRub24;
+                    report["fleetGpuWorkers"] = snapshot.FleetGpuWorkers;
+                    report["extraGpuCoins"] = snapshot.ExtraFleetGpusList
+                        .Select(g => $"{g.Coin}:{g.FleetRub24:F2}:{g.FleetWorkers}")
+                        .ToArray();
                     report["gpuCoin"] = snapshot.Gpu?.Coin;
                     report["gpuPriceRub"] = snapshot.Gpu?.RubRate;
                     report["gpuAvg24"] = snapshot.Gpu is { } g ? IncomeMath.FormatGpuRate(g.Average24, g.Unit) : null;

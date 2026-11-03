@@ -108,4 +108,55 @@ public class IncomeMathTests
         Assert.False(IncomeMath.IsFresh(now.AddHours(-3), now));
         Assert.False(IncomeMath.IsFresh(now.AddMinutes(10), now));
     }
+
+    [Fact]
+    public void ExtractGpuPoolTargets_discovers_multi_coin_fleet_wallets_and_deduplicates_regions()
+    {
+        const string fleetJson = """
+        {
+          "gpuMiner": {
+            "poolUrl": "prl-ru.kryptex.network:7048",
+            "user": "0xAbCdEf1234567890"
+          },
+          "gpuProfiles": {
+            "pearlhash": { "poolUrl": "prl-ru.kryptex.network:7048", "user": "" },
+            "CR29": { "poolUrl": "taric29.luckypool.io:3111", "user": "" }
+          },
+          "nodes": [
+            {
+              "name": "mks68i7rtx",
+              "gpuMiner": {
+                "poolUrl": "prl.kryptex.network:7048",
+                "user": "0xabcdef1234567890/mks68i7rtx"
+              }
+            },
+            {
+              "name": "desktop-ib88isg",
+              "gpuMiner": {
+                "poolUrl": "qtc-ru.kryptex.network:7049",
+                "user": "qzTestWalletCaseSensitive123/desktop-ib88isg"
+              }
+            }
+          ]
+        }
+        """;
+
+        // On Xeon (primary is QTC), only PRL is returned as extra fleet GPU target (deduplicated across prl-ru and prl).
+        var fromXeon = IncomeMath.ExtractGpuPoolTargets(
+            fleetJson,
+            excludePoolKey: "kryptex:qtc",
+            excludeAddress: "qzTestWalletCaseSensitive123");
+        var prl = Assert.Single(fromXeon);
+        Assert.Equal("kryptex:prl", prl.PoolKey);
+        Assert.Equal("0xAbCdEf1234567890", prl.Address);
+
+        // On MKS68 (primary is PRL), only QTC is returned, with SS58 case preserved.
+        var fromMks = IncomeMath.ExtractGpuPoolTargets(
+            fleetJson,
+            excludePoolKey: "kryptex:prl",
+            excludeAddress: "0xabcdef1234567890");
+        var qtc = Assert.Single(fromMks);
+        Assert.Equal("kryptex:qtc", qtc.PoolKey);
+        Assert.Equal("qzTestWalletCaseSensitive123", qtc.Address);
+    }
 }

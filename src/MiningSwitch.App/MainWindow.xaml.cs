@@ -279,6 +279,27 @@ public partial class MainWindow : Window
         var nl = Environment.NewLine;
         var cpuRub = snapshot.Cpu.WorkerRub24;
 
+        var fleetCoinTotals = new List<(string Coin, double FleetRub24, double RubRate)>();
+        if (snapshot.Gpu is { } primaryGpu)
+            fleetCoinTotals.Add((primaryGpu.Coin, primaryGpu.FleetRub24, primaryGpu.RubRate));
+        foreach (var extra in snapshot.ExtraFleetGpusList)
+            fleetCoinTotals.Add((extra.Coin, extra.FleetRub24, extra.RubRate));
+
+        var byCoin = fleetCoinTotals
+            .GroupBy(c => c.Coin, StringComparer.OrdinalIgnoreCase)
+            .Select(g => (Coin: g.First().Coin, Rub: g.Sum(x => x.FleetRub24), Rate: g.First().RubRate))
+            .ToList();
+
+        string FormatFleetDetails()
+        {
+            var ordered = byCoin.OrderByDescending(c => c.Rub).ToList();
+            var breakdown = ordered.Count > 1
+                ? $" ({string.Join(" · ", ordered.Select(c => $"{c.Coin} {c.Rub:N2} ₽"))})"
+                : "";
+            return $"CPU ≈ {snapshot.Cpu.FleetRub24:N2} ₽ + GPU ≈ {snapshot.FleetGpuRub24:N2} ₽{breakdown}{nl}" +
+                   $"Воркеров: CPU {snapshot.Cpu.FleetWorkers}, GPU {snapshot.FleetGpuWorkers}. Включает твой ПК.";
+        }
+
         if (snapshot.Gpu is { } gpu)
         {
             IncomeDayLabel.Text = $"≈ {snapshot.WorkerRub24:N2} ₽ / сутки";
@@ -286,10 +307,24 @@ public partial class MainWindow : Window
                 $"CPU ≈ {cpuRub:N2} ₽  +  GPU ≈ {gpu.WorkerRub24:N2} ₽{nl}" +
                 $"{snapshot.Cpu.Average24:N0} H/s CPU · {IncomeMath.FormatGpuRate(gpu.Average24, gpu.Unit)} GPU в среднем за 24 ч";
             if (gpu.Note is not null) IncomeDetailLabel.Text += nl + gpu.Note;
-            FleetIncomeLabel.Text = $"≈ {snapshot.FleetRub24:N2} ₽ / сутки";
-            FleetDetailsLabel.Text =
-                $"CPU ≈ {snapshot.Cpu.FleetRub24:N2} ₽ + GPU ≈ {gpu.FleetRub24:N2} ₽{nl}" +
-                $"Воркеров: CPU {snapshot.Cpu.FleetWorkers}, GPU {gpu.FleetWorkers}. Включает твой ПК.";
+
+            if (snapshot.FleetRub24 is { } fleetRub)
+            {
+                FleetIncomeLabel.Text = $"≈ {fleetRub:N2} ₽ / сутки";
+                FleetDetailsLabel.Text = FormatFleetDetails();
+            }
+            else
+            {
+                FleetIncomeLabel.Text = "— ₽";
+                FleetDetailsLabel.Text = $"CPU всех ПК ≈ {snapshot.Cpu.FleetRub24:N2} ₽ / сутки. Общая сумма появится после ответа всех GPU-пулов.";
+            }
+        }
+        else if (snapshot.GpuError is null && snapshot.FleetRub24 is { } cpuOnlyFleetRub)
+        {
+            IncomeDayLabel.Text = $"≈ {cpuRub:N2} ₽ / сутки";
+            IncomeDetailLabel.Text = $"CPU ≈ {cpuRub:N2} ₽ · {snapshot.Cpu.Average24:N0} H/s CPU в среднем за 24 ч";
+            FleetIncomeLabel.Text = $"≈ {cpuOnlyFleetRub:N2} ₽ / сутки";
+            FleetDetailsLabel.Text = FormatFleetDetails();
         }
         else
         {
@@ -301,8 +336,8 @@ public partial class MainWindow : Window
 
         IncomeNoteLabel.Foreground = Muted;
         IncomeNoteLabel.Text = $"Обновлено {snapshot.FetchedAt:HH:mm}. XMR {snapshot.Cpu.RubRate:N0} ₽";
-        if (snapshot.Gpu is { } gpuRateQuote)
-            IncomeNoteLabel.Text += $" · {gpuRateQuote.Coin} {gpuRateQuote.RubRate:N2} ₽";
+        foreach (var coin in byCoin)
+            IncomeNoteLabel.Text += $" · {coin.Coin} {coin.Rate:N2} ₽";
         if (snapshot.GpuError is not null) IncomeNoteLabel.Text += " · " + snapshot.GpuError;
     }
 

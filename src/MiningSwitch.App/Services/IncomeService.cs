@@ -102,6 +102,127 @@ public static class IncomeMath
         return subdomain;
     }
 
+    public static string? GpuPoolKey(string? poolUrl)
+    {
+        var host = HostOf(poolUrl);
+        if (host is null) return null;
+        if (host.EndsWith(".luckypool.io", StringComparison.OrdinalIgnoreCase))
+            return "luckypool:" + host.ToLowerInvariant();
+        if (KryptexPoolSlug(poolUrl) is { } slug && slug is "prl" or "qtc" or "xtm-c29")
+            return "kryptex:" + slug;
+        return null;
+    }
+
+    public static string ExtractGpuWalletAddress(string? login)
+    {
+        if (string.IsNullOrWhiteSpace(login)) return "";
+        var trimmed = login.Trim();
+        var slash = trimmed.IndexOf('/');
+        if (slash >= 0)
+            return trimmed[..slash].Trim();
+        if (!trimmed.Contains('@'))
+        {
+            var dot = trimmed.IndexOf('.');
+            if (dot >= 0)
+                return trimmed[..dot].Trim();
+        }
+        return trimmed;
+    }
+
+    public static string NormalizeWalletKey(string address) =>
+        address.StartsWith("0x", StringComparison.OrdinalIgnoreCase)
+            ? address.ToLowerInvariant()
+            : address;
+
+    /// <summary>
+    /// Extracts distinct supported GPU pool/wallet targets from a fleet.json or fleet-pools.json payload,
+    /// deduplicating regional endpoints (e.g. prl-ru vs prl) and excluding this PC's primary GPU target.
+    /// </summary>
+    public static IReadOnlyList<GpuPoolTargetSpec> ExtractGpuPoolTargets(
+        string json,
+        string? excludePoolKey = null,
+        string? excludeAddress = null)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return [];
+
+        using var doc = JsonDocument.Parse(json);
+        var root = doc.RootElement;
+
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        if (!string.IsNullOrWhiteSpace(excludePoolKey) && !string.IsNullOrWhiteSpace(excludeAddress))
+            seen.Add(excludePoolKey + "|" + NormalizeWalletKey(excludeAddress.Trim()));
+
+        var results = new List<GpuPoolTargetSpec>();
+
+        void AddFromElement(JsonElement el)
+        {
+            if (el.ValueKind != JsonValueKind.Object) return;
+            string? poolUrl = null, user = null;
+            foreach (var prop in el.EnumerateObject())
+            {
+                if (prop.Value.ValueKind != JsonValueKind.String) continue;
+                if (prop.Name.Equals("poolUrl", StringComparison.OrdinalIgnoreCase))
+                    poolUrl = prop.Value.GetString();
+                else if (prop.Name.Equals("user", StringComparison.OrdinalIgnoreCase))
+                    user = prop.Value.GetString();
+            }
+
+            var poolKey = GpuPoolKey(poolUrl);
+            var address = ExtractGpuWalletAddress(user);
+            if (poolKey is null || string.IsNullOrWhiteSpace(address) || string.IsNullOrWhiteSpace(poolUrl))
+                return;
+
+            var dedupKey = poolKey + "|" + NormalizeWalletKey(address);
+            if (seen.Add(dedupKey))
+                results.Add(new GpuPoolTargetSpec(poolKey, poolUrl.Trim(), address));
+        }
+
+        if (root.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var item in root.EnumerateArray())
+                AddFromElement(item);
+            return results;
+        }
+
+        if (root.ValueKind != JsonValueKind.Object)
+            return results;
+
+        foreach (var prop in root.EnumerateObject())
+        {
+            if (prop.Name.Equals("gpuMiner", StringComparison.OrdinalIgnoreCase))
+            {
+                AddFromElement(prop.Value);
+            }
+            else if (prop.Name.Equals("gpuProfiles", StringComparison.OrdinalIgnoreCase)
+                     && prop.Value.ValueKind == JsonValueKind.Object)
+            {
+                foreach (var profile in prop.Value.EnumerateObject())
+                    AddFromElement(profile.Value);
+            }
+            else if (prop.Name.Equals("nodes", StringComparison.OrdinalIgnoreCase)
+                     && prop.Value.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var node in prop.Value.EnumerateArray())
+                {
+                    if (node.ValueKind != JsonValueKind.Object) continue;
+                    foreach (var nodeProp in node.EnumerateObject())
+                    {
+                        if (nodeProp.Name.Equals("gpuMiner", StringComparison.OrdinalIgnoreCase))
+                            AddFromElement(nodeProp.Value);
+                    }
+                }
+            }
+            else if (prop.Name.Equals("pools", StringComparison.OrdinalIgnoreCase)
+                     && prop.Value.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var item in prop.Value.EnumerateArray())
+                    AddFromElement(item);
+            }
+        }
+
+        return results;
+    }
+
     /// <summary>
     /// Scales raw H/s rates (e.g. pearlhash TH/s) to SI units while preserving pre-scaled units like g/s.
     /// </summary>
@@ -128,6 +249,8 @@ public static class IncomeMath
     }
 }
 
+public sealed record GpuPoolTargetSpec(string PoolKey, string PoolUrl, string Address);
+
 public sealed record CpuQuote(
     string Worker,
     double Average24,
@@ -153,14 +276,29 @@ public sealed record GpuQuote(
     public string? Note { get; init; }
 }
 
+public sealed record FleetGpuPoolQuote(
+    string Coin,
+    double FleetRub24,
+    double RubRate,
+    DateTimeOffset PriceTimeUtc,
+    int FleetWorkers);
+
 public sealed record IncomeSnapshot(
     CpuQuote Cpu,
     GpuQuote? Gpu,
     string? GpuError,
-    DateTimeOffset FetchedAt)
+    DateTimeOffset FetchedAt,
+    IReadOnlyList<FleetGpuPoolQuote>? ExtraFleetGpus = null,
+    bool ExtraFleetGpuFailed = false)
 {
+    public IReadOnlyList<FleetGpuPoolQuote> ExtraFleetGpusList => ExtraFleetGpus ?? [];
+    public double FleetGpuRub24 => (Gpu?.FleetRub24 ?? 0) + ExtraFleetGpusList.Sum(g => g.FleetRub24);
+    public int FleetGpuWorkers => (Gpu?.FleetWorkers ?? 0) + ExtraFleetGpusList.Sum(g => g.FleetWorkers);
     public double? WorkerRub24 => Gpu is null ? Cpu.WorkerRub24 : Cpu.WorkerRub24 + Gpu.WorkerRub24;
-    public double? FleetRub24 => Gpu is null ? null : Cpu.FleetRub24 + Gpu.FleetRub24;
+    public double? FleetRub24 =>
+        ExtraFleetGpuFailed || (Gpu is null && ExtraFleetGpusList.Count == 0)
+            ? null
+            : Cpu.FleetRub24 + FleetGpuRub24;
 }
 
 public sealed class IncomeService : IDisposable
@@ -195,22 +333,132 @@ public sealed class IncomeService : IDisposable
 
         var cpu = await GetCpuQuoteAsync(miner.Wallet!, worker, ct);
 
+        var primaryPoolKey = IncomeMath.GpuPoolKey(config.GpuMiner?.PoolUrl);
+        var primaryAddress = IncomeMath.ExtractGpuWalletAddress(config.GpuMiner?.User);
+        var extraTargets = DiscoverExtraFleetGpuTargets(primaryPoolKey, primaryAddress);
+
+        var extraTasks = extraTargets
+            .Select(t => FetchExtraFleetGpuAsync(t, ct))
+            .ToArray();
+
         GpuQuote? gpu = null;
-        string? gpuError = null;
+        var gpuErrors = new List<string>();
+        bool hasLocalGpuConfig = !string.IsNullOrWhiteSpace(config.GpuMiner?.User)
+            || !string.IsNullOrWhiteSpace(config.GpuMiner?.ExecutablePath)
+            || liveGpu?.Running is true;
+
+        if (hasLocalGpuConfig || extraTasks.Length == 0)
+        {
+            try
+            {
+                // Even a switched-off card's wallet still answers for the fleet forecast; only
+                // this PC's share is zero — a known zero, not missing data.
+                var gpuActive = config.GpuMiner?.Enabled is true || liveGpu?.Running is true;
+                gpu = await GetGpuQuoteAsync(config.GpuMiner, Environment.MachineName, gpuActive, liveGpu, ct);
+            }
+            catch (Exception ex) when (ex is HttpRequestException or JsonException or InvalidOperationException or FormatException)
+            {
+                // A missing GPU source never becomes a confident zero; the caller shows the CPU part.
+                gpuErrors.Add(ex.Message);
+            }
+        }
+
+        var extraQuotes = new List<FleetGpuPoolQuote>();
+        bool extraFailed = false;
+        if (extraTasks.Length > 0)
+        {
+            var results = await Task.WhenAll(extraTasks);
+            foreach (var (quote, error) in results)
+            {
+                if (error is not null)
+                {
+                    extraFailed = true;
+                    gpuErrors.Add(error);
+                }
+                else if (quote is not null && (quote.FleetWorkers > 0 || quote.FleetRub24 > 0))
+                {
+                    extraQuotes.Add(quote);
+                }
+            }
+        }
+
+        var gpuError = gpuErrors.Count > 0 ? string.Join(" · ", gpuErrors.Distinct()) : null;
+        return new IncomeSnapshot(cpu, gpu, gpuError, DateTimeOffset.Now, extraQuotes, extraFailed);
+    }
+
+    private async Task<(FleetGpuPoolQuote? Quote, string? Error)> FetchExtraFleetGpuAsync(
+        GpuPoolTargetSpec target,
+        CancellationToken ct)
+    {
         try
         {
-            // Even a switched-off card's wallet still answers for the fleet forecast; only
-            // this PC's share is zero — a known zero, not missing data.
-            var gpuActive = config.GpuMiner?.Enabled is true || liveGpu?.Running is true;
-            gpu = await GetGpuQuoteAsync(config.GpuMiner, Environment.MachineName, gpuActive, liveGpu, ct);
+            var quote = await GetFleetOnlyGpuQuoteAsync(target, ct);
+            return (new FleetGpuPoolQuote(quote.Coin, quote.FleetRub24, quote.RubRate, quote.PriceTimeUtc, quote.FleetWorkers), null);
         }
         catch (Exception ex) when (ex is HttpRequestException or JsonException or InvalidOperationException or FormatException)
         {
-            // A missing GPU source never becomes a confident zero; the caller shows the CPU part.
-            gpuError = ex.Message;
+            return (null, ex.Message);
+        }
+    }
+
+    private static IReadOnlyList<GpuPoolTargetSpec> DiscoverExtraFleetGpuTargets(
+        string? primaryPoolKey,
+        string? primaryAddress)
+    {
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        if (!string.IsNullOrWhiteSpace(primaryPoolKey) && !string.IsNullOrWhiteSpace(primaryAddress))
+            seen.Add(primaryPoolKey + "|" + IncomeMath.NormalizeWalletKey(primaryAddress));
+
+        var combined = new List<GpuPoolTargetSpec>();
+        foreach (var filePath in CandidateFleetConfigPaths())
+        {
+            try
+            {
+                if (!System.IO.File.Exists(filePath)) continue;
+                var json = System.IO.File.ReadAllText(filePath);
+                foreach (var spec in IncomeMath.ExtractGpuPoolTargets(json, primaryPoolKey, primaryAddress))
+                {
+                    var key = spec.PoolKey + "|" + IncomeMath.NormalizeWalletKey(spec.Address);
+                    if (seen.Add(key))
+                        combined.Add(spec);
+                }
+            }
+            catch (Exception ex) when (ex is System.IO.IOException or UnauthorizedAccessException or JsonException)
+            {
+            }
+        }
+        return combined;
+    }
+
+    private static IEnumerable<string> CandidateFleetConfigPaths()
+    {
+        foreach (var envName in new[] { "MINING_FLEET_CONFIG", "XMRIG_FLEET_CONFIG" })
+        {
+            var env = Environment.GetEnvironmentVariable(envName);
+            if (!string.IsNullOrWhiteSpace(env))
+                yield return env;
         }
 
-        return new IncomeSnapshot(cpu, gpu, gpuError, DateTimeOffset.Now);
+        var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+        if (!string.IsNullOrWhiteSpace(localAppData))
+        {
+            yield return System.IO.Path.Combine(localAppData, "Programs", "mining-fleet", "fleet.json");
+            yield return System.IO.Path.Combine(localAppData, "Programs", "MiningSwitch", "fleet-pools.json");
+        }
+
+        var appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+        if (!string.IsNullOrWhiteSpace(appData))
+            yield return System.IO.Path.Combine(appData, "mining-fleet", "fleet.json");
+
+        if (!string.IsNullOrWhiteSpace(AppContext.BaseDirectory))
+            yield return System.IO.Path.Combine(AppContext.BaseDirectory, "fleet-pools.json");
+
+        var programData = Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData);
+        if (!string.IsNullOrWhiteSpace(programData))
+        {
+            yield return System.IO.Path.Combine(programData, "MiningSwitch", "fleet-pools.json");
+            yield return System.IO.Path.Combine(programData, "mining-fleet", "fleet.json");
+        }
     }
 
     private async Task<CpuQuote> GetCpuQuoteAsync(string wallet, string worker, CancellationToken ct)
@@ -274,6 +522,30 @@ public sealed class IncomeService : IDisposable
         string CoinGeckoId,
         string Unit);
 
+    private static KryptexCoinSpec? ResolveKryptexSpec(string slug) => slug switch
+    {
+        "prl" => new KryptexCoinSpec("prl", "PRL", "PearlHash", "pearl-2", "H/s"),
+        "qtc" => new KryptexCoinSpec("qtc", "QTC", "Poseidon2", "quantus", "H/s"),
+        "xtm-c29" => new KryptexCoinSpec("xtm-c29", "XTM", "Cuckaroo29", "minotari", "g/s"),
+        _ => null,
+    };
+
+    private async Task<GpuQuote> GetFleetOnlyGpuQuoteAsync(GpuPoolTargetSpec target, CancellationToken ct)
+    {
+        var gpuHost = IncomeMath.HostOf(target.PoolUrl);
+        if (gpuHost is not null && gpuHost.EndsWith(".luckypool.io", StringComparison.OrdinalIgnoreCase))
+            return await GetLuckyPoolTariQuoteAsync(target.Address, worker: "", enabled: false, mine: false, ct);
+
+        if (IncomeMath.KryptexPoolSlug(target.PoolUrl) is { } slug)
+        {
+            var spec = ResolveKryptexSpec(slug)
+                ?? throw new InvalidOperationException($"Монета Kryptex '{slug}' ещё не поддержана.");
+            return await GetKryptexCoinQuoteAsync(spec, target.Address, worker: "", enabled: false, mine: false, liveGpu: null, ct);
+        }
+
+        throw new InvalidOperationException("Этот GPU пул не поддержан.");
+    }
+
     private async Task<GpuQuote> GetGpuQuoteAsync(
         GpuMinerSettingsDto? settings,
         string computerName,
@@ -304,15 +576,8 @@ public sealed class IncomeService : IDisposable
 
         if (IncomeMath.KryptexPoolSlug(settings.PoolUrl) is { } slug)
         {
-            var spec = slug switch
-            {
-                "prl" => new KryptexCoinSpec("prl", "PRL", "PearlHash", "pearl-2", "H/s"),
-                "qtc" => new KryptexCoinSpec("qtc", "QTC", "Poseidon2", "quantus", "H/s"),
-                "xtm-c29" => new KryptexCoinSpec("xtm-c29", "XTM", "Cuckaroo29", "minotari", "g/s"),
-                _ => null,
-            };
-            if (spec is null)
-                throw new InvalidOperationException($"Монета Kryptex '{slug}' ещё не поддержана.");
+            var spec = ResolveKryptexSpec(slug)
+                ?? throw new InvalidOperationException($"Монета Kryptex '{slug}' ещё не поддержана.");
 
             return await GetKryptexCoinQuoteAsync(spec, address, worker, enabled, mine, liveGpu, ct);
         }
