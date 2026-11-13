@@ -64,6 +64,81 @@ public static class IncomeMath
         return avg24h;
     }
 
+    /// <summary>
+    /// Extracts the latest positive <c>net_hashrate</c> from Kryptex's <c>/api/v1/net/stats/{coin}</c>
+    /// payload (<c>day</c> series, falling back to <c>week</c>) and combines it with
+    /// <c>/api/v1/coin/{coin}/info</c> emission fields when <c>/{coin}/api/v1/pool/stats</c> fails.
+    /// </summary>
+    public static double? ParseKryptexNetworkFallbackCoinsPerHashrateDay(
+        JsonElement coinInfo,
+        JsonElement netStats,
+        string? expectedAlgo,
+        double feeFraction)
+    {
+        if (coinInfo.ValueKind != JsonValueKind.Object || netStats.ValueKind != JsonValueKind.Object)
+            return null;
+        if (!double.IsFinite(feeFraction) || feeFraction is < 0 or >= 1)
+            return null;
+
+        if (!string.IsNullOrWhiteSpace(expectedAlgo)
+            && coinInfo.TryGetProperty("algo", out var algoProp)
+            && algoProp.ValueKind == JsonValueKind.String
+            && !string.Equals(algoProp.GetString(), expectedAlgo, StringComparison.OrdinalIgnoreCase))
+            return null;
+
+        var blockTime = ReadPositiveDouble(coinInfo, "block_time");
+        var blockReward = ReadPositiveDouble(coinInfo, "block_reward");
+        var netHashrate = ReadLatestKryptexNetHashrate(netStats);
+        if (blockTime is null || blockReward is null || netHashrate is null)
+            return null;
+
+        var coins = KryptexPropCoinsPerHashrateDay(netHashrate.Value, blockTime.Value, blockReward.Value, feeFraction);
+        return coins > 0 && double.IsFinite(coins) ? coins : null;
+    }
+
+    public static double DefaultKryptexFee(string slug) =>
+        string.Equals(slug, "xtm-c29", StringComparison.OrdinalIgnoreCase) ? 0.01 : 0.03;
+
+    private static double? ReadLatestKryptexNetHashrate(JsonElement netStats)
+    {
+        foreach (var seriesName in new[] { "day", "week" })
+        {
+            if (!netStats.TryGetProperty(seriesName, out var series) || series.ValueKind != JsonValueKind.Array)
+                continue;
+
+            double? bestRate = null;
+            long bestTimestamp = long.MinValue;
+            foreach (var item in series.EnumerateArray())
+            {
+                if (item.ValueKind != JsonValueKind.Object) continue;
+                var netHr = ReadPositiveDouble(item, "net_hashrate");
+                if (netHr is null) continue;
+                var ts = (long)(ReadPositiveDouble(item, "timestamp") ?? 0);
+                if (bestRate is null || ts >= bestTimestamp)
+                {
+                    bestTimestamp = ts;
+                    bestRate = netHr;
+                }
+            }
+            if (bestRate is not null)
+                return bestRate;
+        }
+        return null;
+    }
+
+    private static double? ReadPositiveDouble(JsonElement element, string propertyName)
+    {
+        if (!element.TryGetProperty(propertyName, out var prop)) return null;
+        double? val = prop.ValueKind switch
+        {
+            JsonValueKind.Number => prop.GetDouble(),
+            JsonValueKind.String when double.TryParse(
+                prop.GetString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var parsed) => parsed,
+            _ => null,
+        };
+        return val is > 0 && double.IsFinite(val.Value) ? val : null;
+    }
+
     /// <summary>Accepted-share difficulty values work at block reward / difficulty, in coins.</summary>
     public static double GpuCoinsPerShareHash(double networkReward, double coinUnits, double networkDifficulty) =>
         networkReward / coinUnits / networkDifficulty;
@@ -305,16 +380,27 @@ public sealed class IncomeService : IDisposable
 {
     private const double DefaultSigDivisor = 1e12;
     private static readonly TimeSpan CoinGeckoCacheTtl = TimeSpan.FromMinutes(10);
+    private static readonly TimeSpan PoolRateFallbackCacheTtl = TimeSpan.FromHours(2);
 
-    private readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(12) };
+    private readonly HttpClient _http;
     private readonly SemaphoreSlim _priceGate = new(1, 1);
     private readonly Dictionary<string, (double RubRate, DateTimeOffset PriceTimeUtc, DateTimeOffset CachedAtUtc)> _priceCache =
         new(StringComparer.OrdinalIgnoreCase);
+    private readonly object _poolRateLock = new();
+    private readonly Dictionary<string, (double CoinsPerRateDay, DateTimeOffset CachedAtUtc)> _poolRateCache =
+        new(StringComparer.OrdinalIgnoreCase);
 
-    public IncomeService()
+    public IncomeService() : this(handler: null)
     {
+    }
+
+    public IncomeService(HttpMessageHandler? handler)
+    {
+        _http = handler is null
+            ? new HttpClient { Timeout = TimeSpan.FromSeconds(12) }
+            : new HttpClient(handler, disposeHandler: true) { Timeout = TimeSpan.FromSeconds(12) };
         // No proxy on public pool APIs either; a captive portal must not answer instead of the pool.
-        _http.DefaultRequestHeaders.UserAgent.ParseAdd("MiningSwitch/4.1");
+        _http.DefaultRequestHeaders.UserAgent.ParseAdd("MiningSwitch/4.3");
     }
 
     public async Task<IncomeSnapshot> GetSnapshotAsync(
@@ -594,40 +680,15 @@ public sealed class IncomeService : IDisposable
         GpuMinerStatusDto? liveGpu,
         CancellationToken ct)
     {
-        var poolTask = GetJsonAsync($"https://pool.kryptex.com/{spec.Slug}/api/v1/pool/stats", ct);
+        var poolRateTask = ResolveKryptexCoinsPerRateDayAsync(spec, ct);
         var walletTask = GetJsonAsync(
             $"https://pool.kryptex.com/{spec.Slug}/api/v3/miner/workers/" + Uri.EscapeDataString(address), ct);
         var priceTask = GetCoinGeckoRubPriceAsync(spec.CoinGeckoId, spec.Symbol, ct);
-        await Task.WhenAll(poolTask, walletTask, priceTask);
+        await Task.WhenAll(poolRateTask, walletTask, priceTask);
 
-        var pool = poolTask.Result
-            ?? throw new InvalidOperationException($"Пул Kryptex {spec.Symbol} недоступен.");
+        var coinsPerRateDay = poolRateTask.Result;
         var wallet = walletTask.Result
             ?? throw new InvalidOperationException("Статистика GPU-кошелька на Kryptex недоступна.");
-
-        if (!string.Equals(String(pool, "ticker"), spec.Symbol, StringComparison.OrdinalIgnoreCase)
-            || !string.Equals(String(pool, "algo"), spec.ExpectedAlgo, StringComparison.OrdinalIgnoreCase))
-            throw new InvalidOperationException($"Неожиданный алгоритм пула Kryptex {spec.Symbol}.");
-
-        var fee = Number(pool, "fee");
-        if (fee is null or < 0 or >= 1)
-            throw new InvalidOperationException("Неполная оценка GPU от Kryptex.");
-
-        double coinsPerRateDay;
-        if (Number(pool, "estimated_profit_day") is { } est && est > 0 && double.IsFinite(est))
-        {
-            coinsPerRateDay = IncomeMath.KryptexCoinsPerHashrateDay(est, fee.Value);
-        }
-        else if (Number(pool, "net_hashrate") is { } netHr && netHr > 0 && double.IsFinite(netHr)
-                 && Number(pool, "block_time") is { } blockTime && blockTime > 0 && double.IsFinite(blockTime)
-                 && Number(pool, "block_reward") is { } reward && reward > 0 && double.IsFinite(reward))
-        {
-            coinsPerRateDay = IncomeMath.KryptexPropCoinsPerHashrateDay(netHr, blockTime, reward, fee.Value);
-        }
-        else
-        {
-            throw new InvalidOperationException("Неполная оценка GPU от Kryptex.");
-        }
 
         var (rubRate, priceTime) = priceTask.Result;
         var now = DateTimeOffset.UtcNow;
@@ -688,6 +749,73 @@ public sealed class IncomeService : IDisposable
             Unit = spec.Unit,
             Note = note,
         };
+    }
+
+    private async Task<double> ResolveKryptexCoinsPerRateDayAsync(KryptexCoinSpec spec, CancellationToken ct)
+    {
+        var pool = await GetJsonAsync($"https://pool.kryptex.com/{spec.Slug}/api/v1/pool/stats", ct);
+        if (pool is { } poolRoot)
+        {
+            if (!string.Equals(String(poolRoot, "ticker"), spec.Symbol, StringComparison.OrdinalIgnoreCase)
+                || !string.Equals(String(poolRoot, "algo"), spec.ExpectedAlgo, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException($"Неожиданный алгоритм пула Kryptex {spec.Symbol}.");
+
+            var parsed = TryParseKryptexPoolStats(poolRoot);
+            if (parsed is > 0 && double.IsFinite(parsed.Value))
+            {
+                CachePoolRate(spec.Slug, parsed.Value);
+                return parsed.Value;
+            }
+        }
+
+        // Fall back to public coin emission + net_hashrate stats when /{coin}/api/v1/pool/stats returns 5xx.
+        var coinInfoTask = GetJsonAsync($"https://pool.kryptex.com/api/v1/coin/{spec.Slug}/info", ct);
+        var netStatsTask = GetJsonAsync($"https://pool.kryptex.com/api/v1/net/stats/{spec.Slug}", ct);
+        await Task.WhenAll(coinInfoTask, netStatsTask);
+
+        if (coinInfoTask.Result is { } info && netStatsTask.Result is { } net)
+        {
+            var fallback = IncomeMath.ParseKryptexNetworkFallbackCoinsPerHashrateDay(
+                info, net, spec.ExpectedAlgo, IncomeMath.DefaultKryptexFee(spec.Slug));
+            if (fallback is > 0 && double.IsFinite(fallback.Value))
+            {
+                CachePoolRate(spec.Slug, fallback.Value);
+                return fallback.Value;
+            }
+        }
+
+        var now = DateTimeOffset.UtcNow;
+        lock (_poolRateLock)
+        {
+            if (_poolRateCache.TryGetValue(spec.Slug, out var cached)
+                && now - cached.CachedAtUtc <= PoolRateFallbackCacheTtl)
+                return cached.CoinsPerRateDay;
+        }
+
+        throw new InvalidOperationException($"Пул Kryptex {spec.Symbol} недоступен.");
+    }
+
+    private void CachePoolRate(string slug, double coinsPerRateDay)
+    {
+        lock (_poolRateLock)
+            _poolRateCache[slug] = (coinsPerRateDay, DateTimeOffset.UtcNow);
+    }
+
+    private static double? TryParseKryptexPoolStats(JsonElement pool)
+    {
+        var fee = Number(pool, "fee");
+        if (fee is null or < 0 or >= 1)
+            return null;
+
+        if (Number(pool, "estimated_profit_day") is { } est && est > 0 && double.IsFinite(est))
+            return IncomeMath.KryptexCoinsPerHashrateDay(est, fee.Value);
+
+        if (Number(pool, "net_hashrate") is { } netHr && netHr > 0 && double.IsFinite(netHr)
+            && Number(pool, "block_time") is { } blockTime && blockTime > 0 && double.IsFinite(blockTime)
+            && Number(pool, "block_reward") is { } reward && reward > 0 && double.IsFinite(reward))
+            return IncomeMath.KryptexPropCoinsPerHashrateDay(netHr, blockTime, reward, fee.Value);
+
+        return null;
     }
 
     private async Task<GpuQuote> GetLuckyPoolTariQuoteAsync(

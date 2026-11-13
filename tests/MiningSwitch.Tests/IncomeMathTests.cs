@@ -1,4 +1,8 @@
 using System.Globalization;
+using System.Net;
+using System.Net.Http;
+using System.Text;
+using System.Text.Json;
 using MiningSwitch.App.Services;
 using Xunit;
 
@@ -158,5 +162,105 @@ public class IncomeMathTests
         var qtc = Assert.Single(fromMks);
         Assert.Equal("kryptex:qtc", qtc.PoolKey);
         Assert.Equal("qzTestWalletCaseSensitive123", qtc.Address);
+    }
+
+    [Fact]
+    public void Kryptex_network_fallback_computes_rate_and_rejects_mismatched_algo()
+    {
+        using var infoDoc = JsonDocument.Parse(
+            """{"algo":"PearlHash","block_time":184.0,"block_reward":2172.3978357111}""");
+        using var netDoc = JsonDocument.Parse(
+            """
+            {
+              "day": [
+                {"timestamp": 1794558600000, "net_hashrate": 90000000000000000000},
+                {"timestamp": 1794562200000, "net_hashrate": 93619630641086120000}
+              ]
+            }
+            """);
+
+        var rate = IncomeMath.ParseKryptexNetworkFallbackCoinsPerHashrateDay(
+            infoDoc.RootElement,
+            netDoc.RootElement,
+            expectedAlgo: "PearlHash",
+            feeFraction: 0.03);
+        Assert.NotNull(rate);
+
+        var expected = 86400.0 / 184.0 * 2172.3978357111 / 93619630641086120000.0 * 0.97;
+        Assert.Equal(expected * 1e14, rate!.Value * 1e14, precision: 8);
+
+        var wrongAlgo = IncomeMath.ParseKryptexNetworkFallbackCoinsPerHashrateDay(
+            infoDoc.RootElement,
+            netDoc.RootElement,
+            expectedAlgo: "Poseidon2",
+            feeFraction: 0.03);
+        Assert.Null(wrongAlgo);
+    }
+
+    [Fact]
+    public async Task IncomeService_falls_back_to_coin_info_and_net_stats_when_prl_pool_stats_returns_500()
+    {
+        var handler = new StubHttpHandler(req =>
+        {
+            var url = req.RequestUri!.ToString();
+            if (url.Contains("api.hashvault.pro/v3/monero/pool/stats"))
+            {
+                var updated = DateTimeOffset.UtcNow.ToString("O");
+                return StubHttpHandler.Json(
+                    "{" +
+                    "\"config\":{\"sigDivisor\":1000000000000,\"pplns_fee\":0.9}," +
+                    "\"network_statistics\":{\"difficulty\":1000000000,\"value\":600000000000}," +
+                    "\"pool_statistics\":{\"general\":{\"last10blocksAvgReward\":600000000000}}," +
+                    "\"market\":{\"price_rub\":44000,\"last_updated\":\"" + updated + "\"}" +
+                    "}");
+            }
+            if (url.Contains("api.hashvault.pro/v3/monero/wallet/"))
+                return StubHttpHandler.Json("""{"collectiveWorkers":[{"name":"RIG1","avg24hashRate":5000}]}""");
+            if (url.Contains("pool.kryptex.com/prl/api/v1/pool/stats"))
+                return new HttpResponseMessage(HttpStatusCode.InternalServerError);
+            if (url.Contains("pool.kryptex.com/api/v1/coin/prl/info"))
+                return StubHttpHandler.Json("""{"algo":"PearlHash","block_time":184.0,"block_reward":2172.0}""");
+            if (url.Contains("pool.kryptex.com/api/v1/net/stats/prl"))
+                return StubHttpHandler.Json("""{"day":[{"timestamp":1794562200000,"net_hashrate":9.36e19}]}""");
+            if (url.Contains("pool.kryptex.com/prl/api/v3/miner/workers/"))
+                return StubHttpHandler.Json("""{"results":[{"worker":"RIG1","avg_hashrate_24h":5e13}]}""");
+            if (url.Contains("api.coingecko.com"))
+                return StubHttpHandler.Json(
+                    "{\"pearl-2\":{\"rub\":115.0,\"last_updated_at\":" + DateTimeOffset.UtcNow.ToUnixTimeSeconds() + "}}");
+            return new HttpResponseMessage(HttpStatusCode.NotFound);
+        });
+
+        using var service = new IncomeService(handler);
+        var miner = new MinerStatusDto { Wallet = "44wallet", WorkerName = "RIG1", PoolUrl = "pool.hashvault.pro:443" };
+        var config = new MinerConfigDto
+        {
+            WorkerName = "RIG1",
+            PoolUrl = "pool.hashvault.pro:443",
+            GpuMiner = new GpuMinerSettingsDto
+            {
+                Enabled = true,
+                PoolUrl = "prl-ru.kryptex.network:7048",
+                User = "prl1wallet/RIG1",
+            },
+        };
+
+        var snapshot = await service.GetSnapshotAsync(miner, config, CancellationToken.None);
+
+        Assert.Null(snapshot.GpuError);
+        Assert.NotNull(snapshot.Gpu);
+        Assert.Equal("PRL", snapshot.Gpu!.Coin);
+        Assert.True(snapshot.Gpu.FleetRub24 > 10);
+        Assert.NotNull(snapshot.FleetRub24);
+    }
+
+    private sealed class StubHttpHandler(Func<HttpRequestMessage, HttpResponseMessage> responder) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
+            Task.FromResult(responder(request));
+
+        public static HttpResponseMessage Json(string body) => new(HttpStatusCode.OK)
+        {
+            Content = new StringContent(body, Encoding.UTF8, "application/json"),
+        };
     }
 }
